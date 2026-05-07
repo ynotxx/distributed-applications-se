@@ -128,3 +128,143 @@ Social_Media_PHP/
 │   └── vite.config.js
 │
 └── README.md
+```
+
+---
+
+# Installation and Running Instructions
+
+## Requirements
+
+Install the following software before starting the project:
+
+- XAMPP
+- Node.js
+- npm
+- Git (optional)
+
+---
+
+# Back-end Setup
+
+## 1. Clone the repository
+
+```bash
+git clone https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git
+```
+
+Or download the ZIP archive manually.
+
+---
+
+## 2. Move the project to XAMPP
+
+Place the project folder inside:
+
+```txt
+xampp/htdocs/
+```
+
+Example:
+
+```txt
+xampp/htdocs/Social_Media_PHP
+```
+
+---
+
+## 3. Start XAMPP services
+
+Open XAMPP Control Panel and start:
+
+- Apache
+- MySQL
+
+---
+
+## 4. Create the database
+
+Open:
+
+```txt
+http://localhost/phpmyadmin
+```
+
+Create a new database.
+
+Example:
+
+```txt
+social_media_db
+```
+
+---
+
+## 5. Import the database schema
+
+1. Open the created database
+2. Go to the **Import** tab
+3. Select:
+
+```txt
+backend/schema.sql
+```
+
+4. Click **Go**
+
+---
+
+## 6. Configure database connection
+
+Open:
+
+```txt
+backend/db.php
+```
+
+Update the database credentials if necessary:
+
+```php
+$host = "localhost";
+$user = "root";
+$password = "";
+$database = "social_media_db";
+```
+
+---
+
+# Front-end Setup
+
+## 1. Open terminal inside frontend folder
+
+```bash
+cd frontend
+```
+
+---
+
+## 2. Install dependencies
+
+```bash
+npm install
+```
+
+---
+
+## 3. Start the React development server
+
+```bash
+npm run dev
+```
+
+---
+
+## 4. Open the application
+
+After starting the frontend server, open the URL shown in the terminal.
+
+Usually:
+
+```txt
+http://localhost:5173
+```

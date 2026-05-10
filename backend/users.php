@@ -13,8 +13,8 @@ if ($method === 'POST') {
         $username = validate_required_string('username', $d['username'] ?? null, 1, 50);
         $password = validate_required_string('password', $d['password'] ?? null, 1, 128);
 
-        $stmt = $pdo->prepare('SELECT id, username, email, password, avatar, reputation_score, is_author, is_admin, UNIX_TIMESTAMP(registered_on) * 1000 as registered_ts FROM users WHERE username = ?');
-        $stmt->execute([$username]);
+        $stmt = $pdo->prepare('SELECT id, username, email, password, avatar, reputation_score, is_author, is_admin, UNIX_TIMESTAMP(registered_on) * 1000 as registered_ts FROM users WHERE username = ? OR email = ?');
+        $stmt->execute([$username, $username]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$user || !password_verify($password, $user['password'])) {
@@ -49,6 +49,7 @@ if ($method === 'POST') {
     $userStmt = $pdo->prepare('SELECT id, username, email, avatar, reputation_score, is_author, is_admin, UNIX_TIMESTAMP(registered_on) * 1000 as registered_ts FROM users WHERE id = ?');
     $userStmt->execute([$newId]);
     $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+    $user['registered_ts'] = (int)round(microtime(true) * 1000);
     $token = issue_token($pdo, $newId, substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 200), $_SERVER['REMOTE_ADDR'] ?? '');
     send_json(['token' => $token, 'user' => $user], 201);
 }

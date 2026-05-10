@@ -39,3 +39,18 @@ set_exception_handler(function ($e) {
 });
 
 require_once __DIR__ . '/db.php';
+
+try {
+    $userCount = (int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+    if ($userCount === 0) {
+        $stmt = $pdo->prepare('INSERT INTO users (username, email, password, avatar, reputation_score, is_author, is_admin, registered_on, last_login_at) VALUES (?, ?, ?, ?, 0, 1, 1, UTC_TIMESTAMP(), NULL)');
+        $stmt->execute([
+            'admin',
+            'admin@uni.local',
+            password_hash('Admin123!', PASSWORD_DEFAULT),
+            ''
+        ]);
+    }
+} catch (PDOException $e) {
+    throw $e;
+}

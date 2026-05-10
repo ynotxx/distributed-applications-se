@@ -24,7 +24,7 @@ if ($method === 'GET') {
     $authorIdVal = (is_numeric($authorId) && (int)$authorId > 0) ? (int)$authorId : null;
 
     $where = [];
-    $params = [$authUserId];
+    $params = [$authUserId, $authUserId];
 
     if ($feed === 'following') {
         $where[] = 'p.author_id IN (SELECT following_id FROM follows WHERE follower_id = ?)';
@@ -42,7 +42,7 @@ if ($method === 'GET') {
 
     $whereSql = count($where) ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    $query = "SELECT p.*, UNIX_TIMESTAMP(p.created_at) * 1000 as created_ts, u.username as author_name, u.avatar as author_avatar, u.reputation_score as author_reputation, orig_u.username as original_author_name, orig_u.avatar as original_author_avatar, UNIX_TIMESTAMP(original.created_at) * 1000 as original_created_ts, (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = COALESCE(p.original_post_id, p.id)) as likes_count, (SELECT COUNT(*) FROM post_likes pl2 WHERE pl2.post_id = COALESCE(p.original_post_id, p.id) AND pl2.user_id = ?) as is_liked, (SELECT COUNT(*) FROM posts pp WHERE pp.original_post_id = COALESCE(p.original_post_id, p.id) OR pp.id = COALESCE(p.original_post_id, p.id)) - 1 as reblogs_count FROM posts p JOIN users u ON p.author_id = u.id LEFT JOIN posts original ON p.original_post_id = original.id LEFT JOIN users orig_u ON original.author_id = orig_u.id $whereSql ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
+    $query = "SELECT p.*, UNIX_TIMESTAMP(p.created_at) * 1000 as created_ts, u.username as author_name, u.avatar as author_avatar, u.reputation_score as author_reputation, orig_u.username as original_author_name, orig_u.avatar as original_author_avatar, UNIX_TIMESTAMP(original.created_at) * 1000 as original_created_ts, EXISTS(SELECT 1 FROM posts rp WHERE rp.author_id = ? AND COALESCE(rp.original_post_id, rp.id) = COALESCE(p.original_post_id, p.id)) as is_reblogged_by_me, (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = COALESCE(p.original_post_id, p.id)) as likes_count, (SELECT COUNT(*) FROM post_likes pl2 WHERE pl2.post_id = COALESCE(p.original_post_id, p.id) AND pl2.user_id = ?) as is_liked, (SELECT COUNT(*) FROM posts pp WHERE pp.original_post_id = COALESCE(p.original_post_id, p.id) OR pp.id = COALESCE(p.original_post_id, p.id)) - 1 as reblogs_count FROM posts p JOIN users u ON p.author_id = u.id LEFT JOIN posts original ON p.original_post_id = original.id LEFT JOIN users orig_u ON original.author_id = orig_u.id $whereSql ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
 
     $stmt = $pdo->prepare($query);
     $stmt->execute($params);
@@ -56,6 +56,35 @@ if ($method === 'POST') {
         $postId = validate_int_id('post_id', $d['post_id'] ?? null);
         $pdo->prepare('UPDATE posts SET view_count = view_count + 1 WHERE id = ?')->execute([$postId]);
         send_json(['status' => 'ok']);
+    }
+
+    if (($d['action'] ?? '') === 'unreblog') {
+        $origIdRaw = $d['original_post_id'] ?? null;
+        $origId = (is_numeric($origIdRaw) && (int)$origIdRaw > 0) ? (int)$origIdRaw : null;
+        if (!$origId) send_problem(400, 'Bad Request', 'Missing original_post_id', null, null, $_SERVER['REQUEST_URI'] ?? null);
+
+        $sourceStmt = $pdo->prepare('SELECT id, original_post_id FROM posts WHERE id = ?');
+        $sourceStmt->execute([$origId]);
+        $sourcePost = $sourceStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$sourcePost) send_problem(404, 'Not Found', 'Original post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
+        $originalRootId = (int)($sourcePost['original_post_id'] ?? 0) > 0 ? (int)$sourcePost['original_post_id'] : (int)$sourcePost['id'];
+
+        $findStmt = $pdo->prepare('SELECT id, original_post_id FROM posts WHERE author_id = ? AND COALESCE(original_post_id, id) = ? LIMIT 1');
+        $findStmt->execute([$authUserId, $originalRootId]);
+        $reblog = $findStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$reblog) send_problem(404, 'Not Found', 'Reblog not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
+
+        $delStmt = $pdo->prepare('DELETE FROM posts WHERE id = ?');
+        $delStmt->execute([(int)$reblog['id']]);
+
+        $origAuthorStmt = $pdo->prepare('SELECT author_id FROM posts WHERE id = ?');
+        $origAuthorStmt->execute([$originalRootId]);
+        $origAuthorId = $origAuthorStmt->fetchColumn();
+        if ($origAuthorId && (string)$origAuthorId !== (string)$authUserId) {
+            $pdo->prepare('UPDATE users SET reputation_score = reputation_score - 3 WHERE id = ?')->execute([$origAuthorId]);
+        }
+
+        send_json(['status' => 'deleted']);
     }
 
     if (($d['action'] ?? '') === 'like') {
@@ -94,6 +123,26 @@ if ($method === 'POST') {
     $content = validate_required_string('content', $d['content'] ?? null, 1, 10000);
     $origIdRaw = $d['original_post_id'] ?? null;
     $origId = (is_numeric($origIdRaw) && (int)$origIdRaw > 0) ? (int)$origIdRaw : null;
+
+    if ($origId) {
+        $sourceStmt = $pdo->prepare('SELECT id, author_id, original_post_id FROM posts WHERE id = ?');
+        $sourceStmt->execute([$origId]);
+        $sourcePost = $sourceStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$sourcePost) {
+            send_problem(404, 'Not Found', 'Original post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
+        }
+
+        $originalRootId = (int)($sourcePost['original_post_id'] ?? 0) > 0 ? (int)$sourcePost['original_post_id'] : (int)$sourcePost['id'];
+        $alreadyReblogged = $pdo->prepare('SELECT id FROM posts WHERE author_id = ? AND COALESCE(original_post_id, id) = ? LIMIT 1');
+        $alreadyReblogged->execute([$authUserId, $originalRootId]);
+
+        if ($alreadyReblogged->fetch()) {
+            send_problem(409, 'Conflict', 'You can only reblog this post once', null, ['original_post_id' => 'already_reblogged'], $_SERVER['REQUEST_URI'] ?? null);
+        }
+
+        $origId = $originalRootId;
+    }
 
     $wordCount = str_word_count(strip_tags($content));
     $readingTime = max(1, ceil($wordCount / 200));

@@ -70,6 +70,10 @@ function App() {
   const [serverNotifications, setServerNotifications] = useState([]);
   const [showActivity, setShowActivity] = useState(false);
   const [followState, setFollowState] = useState({ is_following: false });
+  const [myFollows, setMyFollows] = useState([]);
+  const [followQuery, setFollowQuery] = useState('');
+  const [followStatusFilter, setFollowStatusFilter] = useState('');
+  const [followDrafts, setFollowDrafts] = useState({});
   const postsPerPage = 5;
 
   const [editId, setEditId] = useState(null);
@@ -184,6 +188,25 @@ function App() {
       .catch(() => setFollowState({ is_following: false }));
   };
 
+  const fetchMyFollows = () => {
+    if (!currentUser || !isMyProfile) return;
+
+    const params = new URLSearchParams({
+      direction: 'following',
+      pageSize: '50',
+      sortBy: 'created_at',
+      sortDir: 'desc'
+    });
+
+    if (followQuery.trim()) params.set('q', followQuery.trim());
+    if (followStatusFilter) params.set('status', followStatusFilter);
+
+    apiFetch(`/follows.php?${params.toString()}`)
+      .then(res => res.json())
+      .then(data => setMyFollows(Array.isArray(data) ? data : []))
+      .catch(() => setMyFollows([]));
+  };
+
   const handleToggleFollow = () => {
     if (!currentUser || !profileUser || isMyProfile) return;
 
@@ -287,6 +310,12 @@ function App() {
     fetchFollowState(profileUser);
   }, [profileUser?.id, currentUser?.id]);
 
+  useEffect(() => {
+    if (currentUser && view === 'profile' && profileSlug && currentUser.username.toLowerCase() === profileSlug.toLowerCase()) {
+      fetchMyFollows();
+    }
+  }, [currentUser?.id, view, profileSlug, followQuery, followStatusFilter]);
+
   const handleLogin = (e) => {
     e.preventDefault();
     fetch(`${API}/users.php`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'login', username, password }) })
@@ -344,6 +373,11 @@ function App() {
   };
 
   const handleReblog = (post) => {
+    if (post.is_reblogged_by_me) {
+      showMsg('Вече сте реблогнали тази публикация.');
+      return;
+    }
+
     apiFetch(`/posts.php`, {
       method: 'POST',
       body: JSON.stringify({
@@ -351,13 +385,39 @@ function App() {
         content: post.content,
         original_post_id: post.original_post_id || post.id
       })
+    }).then(async res => {
+      if (res.status === 409) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || 'Вече сте реблогнали тази публикация.');
+      }
+      if (!res.ok) throw new Error('Грешка при реблог');
+      return res.json();
     }).then(() => {
       showMsg('Успешно реблогнато!');
       fetchPosts();
       fetchUsers();
       fetchNotifications();
       addActivity('Реблогнахте публикация');
-    });
+    }).catch(err => alert(err.message));
+  };
+
+  const handleUnreblog = (post) => {
+    apiFetch(`/posts.php`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'unreblog', original_post_id: post.original_post_id || post.id })
+    }).then(async res => {
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.detail || 'Грешка при отмяна на реблог');
+      }
+      return res.json();
+    }).then(() => {
+      showMsg('Реблогът е премахнат.');
+      fetchPosts();
+      fetchUsers();
+      fetchNotifications();
+      addActivity('Премахнахте реблог');
+    }).catch(err => alert(err.message));
   };
   const handleViewPost = (postId) => {
     if (!viewedPosts.has(postId)) {
@@ -398,6 +458,38 @@ function App() {
         fetchPosts(); fetchUsers(); showMsg('Профилът е обновен!');
         window.location.hash = `/profile/${newUsername}`;
     }).catch(err => alert(err.message === 'Заето име' ? 'Това име вече е заето!' : 'Грешка при запазване.'));
+  };
+
+  const handleSaveFollow = (follow) => {
+    const draft = followDrafts[follow.id] || {};
+    apiFetch(`/follows.php`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        id: follow.id,
+        status: draft.status ?? follow.status,
+        note: draft.note ?? follow.note ?? '',
+        is_close_friend: draft.is_close_friend ?? follow.is_close_friend
+      })
+    })
+      .then(res => res.json())
+      .then(() => {
+        setFollowDrafts(prev => {
+          const next = { ...prev };
+          delete next[follow.id];
+          return next;
+        });
+        fetchMyFollows();
+        showMsg('Записът за follow е обновен.');
+      });
+  };
+
+  const handleDeleteFollow = (followId) => {
+    if (!window.confirm('Да премахна ли следването?')) return;
+    apiFetch(`/follows.php?id=${followId}`, { method: 'DELETE' })
+      .then(() => {
+        fetchMyFollows();
+        showMsg('Следването е премахнато.');
+      });
   };
 
   const startEdit = (type, item) => { setEditId(item.id); setEditType(type); setTempData(item); };
@@ -547,9 +639,15 @@ function App() {
               <button onClick={() => handleLike(p)} className="btn btn-default" style={{ backgroundColor: isDark ? (p.is_liked > 0 ? '#1e2c3f' : '#121a27') : (p.is_liked > 0 ? '#eef5fb' : '#ffffff'), boxShadow: p.is_liked > 0 ? 'inset 0 2px 4px rgba(0,0,0,0.08)' : 'none', padding: '4px 10px' }}>
                 Харесвания: {p.likes_count || 0}
               </button>
-              <button onClick={() => handleReblog(p)} className="btn btn-default" style={{ padding: '4px 10px' }}>
-                Реблог {p.reblogs_count > 0 ? p.reblogs_count : ''}
-              </button>
+              {p.is_reblogged_by_me ? (
+                <button onClick={() => handleUnreblog(p)} className="btn btn-default" style={{ padding: '4px 10px' }}>
+                  Отмени реблог
+                </button>
+              ) : (
+                <button onClick={() => handleReblog(p)} className="btn btn-default" style={{ padding: '4px 10px' }}>
+                  Реблог {p.reblogs_count > 0 ? p.reblogs_count : ''}
+                </button>
+              )}
               <span style={{ fontSize: '12px', color: colors.muted, marginLeft: 'auto' }}>Преглеждания: {p.view_count || 0}</span>
               <span style={{ fontSize: '12px', color: colors.muted }}>Време за четене: {p.reading_time_minutes || 1} мин.</span>
             </div>
@@ -575,7 +673,7 @@ function App() {
       <div className="container" style={{ maxWidth: '400px', marginTop: '100px', color: colors.text, backgroundColor: colors.page, minHeight: '100vh', paddingTop: '20px' }}>
         <h2 style={{ textAlign: 'center' }}>{isRegistering ? 'Регистрация' : 'Вход'}</h2>
         <form onSubmit={isRegistering ? handleRegister : handleLogin} className="form-group">
-          <input placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} required />
+          <input placeholder="Username или email" value={username} onChange={e => setUsername(e.target.value)} required />
           {isRegistering && <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required />}
           <input placeholder="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} required />
           <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>{isRegistering ? 'Създай профил' : 'Влез'}</button>
@@ -773,6 +871,97 @@ function App() {
                <input value={newUsername} onChange={e => setNewUsername(e.target.value)} placeholder="Ново име..." style={{ width: '100%', marginBottom: '10px', padding: '8px', border: `1px solid ${colors.border}` }} />
                <input value={newAvatar} onChange={e => setNewAvatar(e.target.value)} placeholder="URL на профилна снимка (завършващ на .jpg, .png...)" style={{ width: '100%', marginBottom: '10px', padding: '8px', border: `1px solid ${colors.border}` }} />
                <button onClick={handleSaveOptions} className="btn btn-primary">Запази промените</button>
+            </div>
+          )}
+          {isMyProfile && (
+            <div className="card" style={{ border: `1px solid ${colors.border}`, padding: '15px', marginBottom: '20px', backgroundColor: colors.softCard, color: colors.text, borderRadius: '12px' }}>
+              <h4 style={{ marginTop: 0 }}>Моите следвания</h4>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '15px' }}>
+                <input
+                  value={followQuery}
+                  onChange={e => setFollowQuery(e.target.value)}
+                  placeholder="Търси по потребител или бележка..."
+                  style={{ flex: 1, minWidth: '220px', padding: '8px', border: `1px solid ${colors.border}` }}
+                />
+                <select
+                  value={followStatusFilter}
+                  onChange={e => setFollowStatusFilter(e.target.value)}
+                  style={{ padding: '8px', border: `1px solid ${colors.border}`, backgroundColor: colors.input, color: colors.text }}
+                >
+                  <option value="">Всички статуси</option>
+                  <option value="active">active</option>
+                  <option value="muted">muted</option>
+                  <option value="blocked">blocked</option>
+                </select>
+                <button onClick={fetchMyFollows} className="btn btn-default">Обнови</button>
+              </div>
+
+              {myFollows.length === 0 ? (
+                <p style={{ color: colors.muted, marginBottom: 0 }}>Няма резултати за показване.</p>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${colors.border}` }}>
+                        <th style={{ padding: '8px' }}>Потребител</th>
+                        <th style={{ padding: '8px' }}>Статус</th>
+                        <th style={{ padding: '8px' }}>Бележка</th>
+                        <th style={{ padding: '8px' }}>Близък</th>
+                        <th style={{ padding: '8px' }}>Действия</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {myFollows.map(follow => {
+                        const draft = followDrafts[follow.id] || {};
+                        const currentStatus = draft.status ?? follow.status;
+                        const currentNote = draft.note ?? follow.note ?? '';
+                        const currentCloseFriend = draft.is_close_friend ?? Number(follow.is_close_friend) === 1;
+
+                        return (
+                          <tr key={follow.id} style={{ borderTop: `1px solid ${colors.subtleBorder}` }}>
+                            <td style={{ padding: '8px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <img src={follow.other_avatar || DEFAULT_AVATAR} alt="avatar" style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover' }} />
+                                <strong>{follow.other_username}</strong>
+                              </div>
+                            </td>
+                            <td style={{ padding: '8px' }}>
+                              <select
+                                value={currentStatus}
+                                onChange={e => setFollowDrafts(prev => ({ ...prev, [follow.id]: { ...draft, status: e.target.value } }))}
+                                style={{ width: '100%', padding: '6px', border: `1px solid ${colors.border}`, backgroundColor: colors.input, color: colors.text }}
+                              >
+                                <option value="active">active</option>
+                                <option value="muted">muted</option>
+                                <option value="blocked">blocked</option>
+                              </select>
+                            </td>
+                            <td style={{ padding: '8px' }}>
+                              <input
+                                value={currentNote}
+                                onChange={e => setFollowDrafts(prev => ({ ...prev, [follow.id]: { ...draft, note: e.target.value } }))}
+                                style={{ width: '100%', padding: '6px', border: `1px solid ${colors.border}` }}
+                                placeholder="Бележка"
+                              />
+                            </td>
+                            <td style={{ padding: '8px', textAlign: 'center' }}>
+                              <input
+                                type="checkbox"
+                                checked={currentCloseFriend}
+                                onChange={e => setFollowDrafts(prev => ({ ...prev, [follow.id]: { ...draft, is_close_friend: e.target.checked } }))}
+                              />
+                            </td>
+                            <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>
+                              <button onClick={() => handleSaveFollow(follow)} className="btn btn-primary" style={{ marginRight: '8px' }}>Запази</button>
+                              <button onClick={() => handleDeleteFollow(follow.id)} className="btn btn-danger">Премахни</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
           {(() => {

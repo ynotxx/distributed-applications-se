@@ -1,0 +1,1561 @@
+openapi: 3.0.4
+
+info:
+  title: Social Media API
+  description: |-
+    REST API документация за социална медия.
+    Системата позволява регистрация, вход, публикуване на постове,
+    коментари, харесвания, последване на потребители и известия.
+  contact:
+    email: stu2401321071@uni-plovdiv.bg
+  version: 1.0.0
+
+servers:
+  - url: http://localhost/api
+    description: Local development server
+
+tags:
+  - name: auth
+    description: Регистрация, вход, изход и управление на token-и
+  - name: users
+    description: Операции с потребители
+  - name: posts
+    description: Операции с публикации
+  - name: comments
+    description: Операции с коментари
+  - name: likes
+    description: Харесвания и реакции към публикации
+  - name: follows
+    description: Последване на потребители
+  - name: notifications
+    description: Потребителски известия
+
+paths:
+  /auth/login.php:
+    post:
+      tags:
+        - auth
+      summary: Вход в системата
+      description: Автентикира потребител чрез имейл и парола и връща token за достъп.
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Успешен вход
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Невалидни входни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Грешен имейл или парола
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/register.php:
+    post:
+      tags:
+        - auth
+      summary: Регистрация на потребител
+      description: Създава нов потребителски профил.
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Успешна регистрация
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Потребителското име или имейлът вече съществуват
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/logout.php:
+    post:
+      tags:
+        - auth
+      summary: Изход от системата
+      description: Прекратява текущата потребителска сесия.
+      operationId: logoutUser
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Успешен изход
+        '401':
+          description: Невалиден или липсващ token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users.php:
+    get:
+      tags:
+        - users
+      summary: Връща списък с потребители
+      description: Връща потребители с филтриране, странициране и сортиране.
+      operationId: getUsers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: username
+          in: query
+          description: Филтър по потребителско име
+          schema:
+            type: string
+            maxLength: 50
+        - name: email
+          in: query
+          description: Филтър по имейл
+          schema:
+            type: string
+            maxLength: 255
+        - name: page
+          in: query
+          description: Номер на страница
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          description: Брой записи на страница
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: sortBy
+          in: query
+          description: Поле за сортиране
+          schema:
+            type: string
+            enum:
+              - username
+              - email
+              - reputation_score
+              - registered_on
+        - name: sortDir
+          in: query
+          description: Посока на сортиране
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+      responses:
+        '200':
+          description: Успешно извличане на потребители
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '401':
+          description: Невалиден или липсващ token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - users
+      summary: Създаване на потребител
+      operationId: createUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: Потребителят е създаден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - users
+      summary: Редактиране на потребител
+      operationId: updateUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      responses:
+        '200':
+          description: Потребителят е редактиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Потребителят не е намерен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - users
+      summary: Изтриване на потребител
+      operationId: deleteUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Потребителят е изтрит
+        '404':
+          description: Потребителят не е намерен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /posts.php:
+    get:
+      tags:
+        - posts
+      summary: Връща публикации
+      description: Връща публикации с филтриране, странициране и сортиране.
+      operationId: getPosts
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: title
+          in: query
+          description: Филтър по заглавие
+          schema:
+            type: string
+            maxLength: 200
+        - name: content
+          in: query
+          description: Филтър по съдържание
+          schema:
+            type: string
+            maxLength: 10000
+        - name: author_id
+          in: query
+          description: Филтър по автор
+          schema:
+            type: integer
+            minimum: 1
+        - name: is_published
+          in: query
+          description: Филтър по статус на публикуване
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum:
+              - created_at
+              - updated_at
+              - title
+              - view_count
+              - reading_time_minutes
+        - name: sortDir
+          in: query
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+      responses:
+        '200':
+          description: Успешно извличане на публикации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostListResponse'
+        '401':
+          description: Невалиден или липсващ token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - posts
+      summary: Създаване на публикация
+      operationId: createPost
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostCreateRequest'
+      responses:
+        '201':
+          description: Публикацията е създадена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - posts
+      summary: Редактиране на публикация
+      operationId: updatePost
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostUpdateRequest'
+      responses:
+        '200':
+          description: Публикацията е редактирана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Публикацията не е намерена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - posts
+      summary: Изтриване на публикация
+      operationId: deletePost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Публикацията е изтрита
+        '404':
+          description: Публикацията не е намерена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /comments.php:
+    get:
+      tags:
+        - comments
+      summary: Връща коментари
+      description: Връща коментари с филтриране, странициране и сортиране.
+      operationId: getComments
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: post_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: user_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: parent_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: is_approved
+          in: query
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum:
+              - created_at
+              - updated_at
+              - spam_score
+        - name: sortDir
+          in: query
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+      responses:
+        '200':
+          description: Успешно извличане на коментари
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentListResponse'
+        '401':
+          description: Невалиден или липсващ token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - comments
+      summary: Създаване на коментар
+      operationId: createComment
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentCreateRequest'
+      responses:
+        '201':
+          description: Коментарът е създаден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - comments
+      summary: Редактиране на коментар
+      operationId: updateComment
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentUpdateRequest'
+      responses:
+        '200':
+          description: Коментарът е редактиран
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Коментарът не е намерен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - comments
+      summary: Изтриване на коментар
+      operationId: deleteComment
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Коментарът е изтрит
+        '404':
+          description: Коментарът не е намерен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /likes.php:
+    get:
+      tags:
+        - likes
+      summary: Връща харесвания
+      description: Връща харесвания с филтриране, странициране и сортиране.
+      operationId: getLikes
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: post_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: user_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: reaction_type
+          in: query
+          schema:
+            type: string
+            maxLength: 20
+        - name: source
+          in: query
+          schema:
+            type: string
+            maxLength: 30
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum:
+              - created_at
+              - reaction_type
+              - weight
+        - name: sortDir
+          in: query
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+      responses:
+        '200':
+          description: Успешно извличане на харесвания
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LikeListResponse'
+        '401':
+          description: Невалиден или липсващ token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - likes
+      summary: Харесване на публикация
+      operationId: likePost
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LikeCreateRequest'
+      responses:
+        '201':
+          description: Публикацията е харесана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostLike'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - likes
+      summary: Премахване на харесване
+      operationId: unlikePost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: post_id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Харесването е премахнато
+        '404':
+          description: Харесването не е намерено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /follows.php:
+    get:
+      tags:
+        - follows
+      summary: Връща последвания
+      description: Връща последвания с филтриране, странициране и сортиране.
+      operationId: getFollows
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: follower_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: following_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: status
+          in: query
+          schema:
+            type: string
+            maxLength: 20
+        - name: note
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum:
+              - created_at
+              - updated_at
+              - status
+        - name: sortDir
+          in: query
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+      responses:
+        '200':
+          description: Успешно извличане на последвания
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowListResponse'
+        '401':
+          description: Невалиден или липсващ token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - follows
+      summary: Последване на потребител
+      operationId: followUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FollowCreateRequest'
+      responses:
+        '201':
+          description: Потребителят е последван
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Follow'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - follows
+      summary: Редактиране на последване
+      operationId: updateFollow
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FollowUpdateRequest'
+      responses:
+        '200':
+          description: Последването е редактирано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Follow'
+        '404':
+          description: Последването не е намерено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - follows
+      summary: Премахване на последване
+      operationId: unfollowUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Последването е премахнато
+        '404':
+          description: Последването не е намерено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /notifications.php:
+    get:
+      tags:
+        - notifications
+      summary: Връща известия
+      description: Връща известия с филтриране, странициране и сортиране.
+      operationId: getNotifications
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            maxLength: 30
+        - name: is_read
+          in: query
+          schema:
+            type: boolean
+        - name: user_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: actor_id
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum:
+              - created_at
+              - type
+              - is_read
+        - name: sortDir
+          in: query
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+      responses:
+        '200':
+          description: Успешно извличане на известия
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationListResponse'
+        '401':
+          description: Невалиден или липсващ token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      tags:
+        - notifications
+      summary: Създаване на известие
+      operationId: createNotification
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationCreateRequest'
+      responses:
+        '201':
+          description: Известието е създадено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '400':
+          description: Невалидни данни
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - notifications
+      summary: Редактиране или маркиране на известие като прочетено
+      operationId: updateNotification
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationUpdateRequest'
+      responses:
+        '200':
+          description: Известието е обновено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '404':
+          description: Известието не е намерено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - notifications
+      summary: Изтриване на известие
+      operationId: deleteNotification
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Известието е изтрито
+        '404':
+          description: Известието не е намерено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Token
+
+  schemas:
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          maxLength: 255
+
+    RegisterRequest:
+      type: object
+      required:
+        - username
+        - email
+        - password
+      properties:
+        username:
+          type: string
+          maxLength: 50
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          maxLength: 255
+        avatar:
+          type: string
+          maxLength: 255
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+          maxLength: 50
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        avatar:
+          type: string
+          maxLength: 255
+        reputation_score:
+          type: integer
+        is_author:
+          type: boolean
+        is_admin:
+          type: boolean
+        registered_on:
+          type: string
+          format: date-time
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    UserCreateRequest:
+      type: object
+      required:
+        - username
+        - email
+        - password
+        - registered_on
+      properties:
+        username:
+          type: string
+          maxLength: 50
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          maxLength: 255
+        avatar:
+          type: string
+          maxLength: 255
+        is_author:
+          type: boolean
+        is_admin:
+          type: boolean
+        registered_on:
+          type: string
+          format: date-time
+
+    UserUpdateRequest:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+          maxLength: 50
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        avatar:
+          type: string
+          maxLength: 255
+        reputation_score:
+          type: integer
+        is_author:
+          type: boolean
+        is_admin:
+          type: boolean
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Post:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+          maxLength: 10000
+        author_id:
+          type: integer
+        original_post_id:
+          type: integer
+          nullable: true
+        reading_time_minutes:
+          type: integer
+          minimum: 1
+        is_published:
+          type: boolean
+        view_count:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    PostCreateRequest:
+      type: object
+      required:
+        - title
+        - content
+        - author_id
+        - created_at
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+          maxLength: 10000
+        author_id:
+          type: integer
+        original_post_id:
+          type: integer
+          nullable: true
+        reading_time_minutes:
+          type: integer
+          minimum: 1
+        is_published:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    PostUpdateRequest:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+          maxLength: 10000
+        reading_time_minutes:
+          type: integer
+          minimum: 1
+        is_published:
+          type: boolean
+        updated_at:
+          type: string
+          format: date-time
+
+    Comment:
+      type: object
+      properties:
+        id:
+          type: integer
+        post_id:
+          type: integer
+        user_id:
+          type: integer
+        parent_id:
+          type: integer
+          nullable: true
+        content:
+          type: string
+          maxLength: 2000
+        spam_score:
+          type: integer
+          minimum: 0
+        is_approved:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CommentCreateRequest:
+      type: object
+      required:
+        - post_id
+        - user_id
+        - content
+        - created_at
+      properties:
+        post_id:
+          type: integer
+        user_id:
+          type: integer
+        parent_id:
+          type: integer
+          nullable: true
+        content:
+          type: string
+          maxLength: 2000
+        created_at:
+          type: string
+          format: date-time
+
+    CommentUpdateRequest:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: integer
+        content:
+          type: string
+          maxLength: 2000
+        spam_score:
+          type: integer
+          minimum: 0
+        is_approved:
+          type: boolean
+        updated_at:
+          type: string
+          format: date-time
+
+    Follow:
+      type: object
+      properties:
+        id:
+          type: integer
+        follower_id:
+          type: integer
+        following_id:
+          type: integer
+        status:
+          type: string
+          maxLength: 20
+        note:
+          type: string
+          maxLength: 200
+        is_close_friend:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    FollowCreateRequest:
+      type: object
+      required:
+        - follower_id
+        - following_id
+        - created_at
+      properties:
+        follower_id:
+          type: integer
+        following_id:
+          type: integer
+        status:
+          type: string
+          maxLength: 20
+        note:
+          type: string
+          maxLength: 200
+        is_close_friend:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    FollowUpdateRequest:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          maxLength: 20
+        note:
+          type: string
+          maxLength: 200
+        is_close_friend:
+          type: boolean
+        updated_at:
+          type: string
+          format: date-time
+
+    Notification:
+      type: object
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        actor_id:
+          type: integer
+          nullable: true
+        type:
+          type: string
+          maxLength: 30
+        message:
+          type: string
+          maxLength: 255
+        post_id:
+          type: integer
+          nullable: true
+        comment_id:
+          type: integer
+          nullable: true
+        is_read:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    NotificationCreateRequest:
+      type: object
+      required:
+        - user_id
+        - type
+        - message
+        - created_at
+      properties:
+        user_id:
+          type: integer
+        actor_id:
+          type: integer
+          nullable: true
+        type:
+          type: string
+          maxLength: 30
+        message:
+          type: string
+          maxLength: 255
+        post_id:
+          type: integer
+          nullable: true
+        comment_id:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    NotificationUpdateRequest:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: integer
+        is_read:
+          type: boolean
+        message:
+          type: string
+          maxLength: 255
+
+    PostLike:
+      type: object
+      properties:
+        id:
+          type: integer
+        post_id:
+          type: integer
+        user_id:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        reaction_type:
+          type: string
+          maxLength: 20
+        weight:
+          type: integer
+        source:
+          type: string
+          maxLength: 30
+
+    LikeCreateRequest:
+      type: object
+      required:
+        - post_id
+        - user_id
+        - created_at
+      properties:
+        post_id:
+          type: integer
+        user_id:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        reaction_type:
+          type: string
+          maxLength: 20
+        weight:
+          type: integer
+        source:
+          type: string
+          maxLength: 30
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+
+    UserListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    PostListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Post'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    CommentListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    LikeListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PostLike'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    FollowListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Follow'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    NotificationListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    Error:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+        status:
+          type: integer
+        details:
+          type: string

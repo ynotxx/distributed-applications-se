@@ -54,7 +54,7 @@ cd distributed-applications-se/course-work/implementations/Sonder
 Преместете папката `backend` в:
 
 ```txt
-xampp/htdocs/uni-api
+xampp/htdocs/backend
 ```
 
 Стартирайте:

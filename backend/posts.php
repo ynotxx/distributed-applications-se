@@ -42,11 +42,53 @@ if ($method === 'GET') {
 
     $whereSql = count($where) ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    $query = "SELECT p.*, UNIX_TIMESTAMP(p.created_at) * 1000 as created_ts, u.username as author_name, u.avatar as author_avatar, u.reputation_score as author_reputation, orig_u.username as original_author_name, orig_u.avatar as original_author_avatar, UNIX_TIMESTAMP(original.created_at) * 1000 as original_created_ts, EXISTS(SELECT 1 FROM posts rp WHERE rp.author_id = ? AND COALESCE(rp.original_post_id, rp.id) = COALESCE(p.original_post_id, p.id)) as is_reblogged_by_me, (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = COALESCE(p.original_post_id, p.id)) as likes_count, (SELECT COUNT(*) FROM post_likes pl2 WHERE pl2.post_id = COALESCE(p.original_post_id, p.id) AND pl2.user_id = ?) as is_liked, (SELECT COUNT(*) FROM posts pp WHERE pp.original_post_id = COALESCE(p.original_post_id, p.id) OR pp.id = COALESCE(p.original_post_id, p.id)) - 1 as reblogs_count FROM posts p JOIN users u ON p.author_id = u.id LEFT JOIN posts original ON p.original_post_id = original.id LEFT JOIN users orig_u ON original.author_id = orig_u.id $whereSql ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
+    $createdTsExpr = "UNIX_TIMESTAMP(DATE_ADD(p.created_at, INTERVAL TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) SECOND)) * 1000 as created_ts";
+    $originalCreatedTsExpr = "UNIX_TIMESTAMP(DATE_ADD(original.created_at, INTERVAL TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) SECOND)) * 1000 as original_created_ts";
+
+    $query = "SELECT p.*, {$createdTsExpr}, u.username as author_name, u.avatar as author_avatar, u.reputation_score as author_reputation, orig_u.username as original_author_name, orig_u.avatar as original_author_avatar, {$originalCreatedTsExpr}, EXISTS(SELECT 1 FROM posts rp WHERE rp.author_id = ? AND rp.original_post_id IS NOT NULL AND COALESCE(rp.original_post_id, rp.id) = COALESCE(p.original_post_id, p.id)) as is_reblogged_by_me, (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = COALESCE(p.original_post_id, p.id)) as likes_count, (SELECT COUNT(*) FROM post_likes pl2 WHERE pl2.post_id = COALESCE(p.original_post_id, p.id) AND pl2.user_id = ?) as is_liked, (SELECT COUNT(*) FROM posts pp WHERE pp.original_post_id = COALESCE(p.original_post_id, p.id) OR pp.id = COALESCE(p.original_post_id, p.id)) - 1 as reblogs_count FROM posts p JOIN users u ON p.author_id = u.id LEFT JOIN posts original ON p.original_post_id = original.id LEFT JOIN users orig_u ON original.author_id = orig_u.id $whereSql ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
 
     $stmt = $pdo->prepare($query);
     $stmt->execute($params);
-    send_json($stmt->fetchAll(PDO::FETCH_ASSOC));
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $blockedStmt = $pdo->prepare('SELECT blocked_id FROM blocks WHERE blocker_id = ?');
+    $blockedStmt->execute([$authUserId]);
+    $blockedRows = $blockedStmt->fetchAll(PDO::FETCH_COLUMN, 0);
+
+    $countWhere = [];
+    $countParams = [];
+    if ($feed === 'following') {
+        $countWhere[] = 'p.author_id IN (SELECT following_id FROM follows WHERE follower_id = ?)';
+        $countParams[] = $authUserId;
+    }
+    if ($q !== '') {
+        $countWhere[] = '(p.title LIKE ? OR p.content LIKE ?)';
+        $countParams[] = '%' . $q . '%';
+        $countParams[] = '%' . $q . '%';
+    }
+    if ($authorIdVal !== null) {
+        $countWhere[] = 'p.author_id = ?';
+        $countParams[] = $authorIdVal;
+    }
+    $countWhereSql = count($countWhere) ? ('WHERE ' . implode(' AND ', $countWhere)) : '';
+    $countSql = "SELECT COUNT(*) FROM posts p $countWhereSql";
+    $countStmt = $pdo->prepare($countSql);
+    $countStmt->execute($countParams);
+    $total = (int)$countStmt->fetchColumn();
+
+    foreach ($rows as &$r) {
+        if (isset($r['created_ts'])) $r['created_at'] = iso8601_or_null($r['created_ts']);
+        if (isset($r['original_created_ts'])) $r['original_created_at'] = iso8601_or_null($r['original_created_ts']);
+        if (in_array((int)($r['author_id'] ?? 0), $blockedRows, true)) {
+            $r['is_blocked'] = 1;
+            $r['title'] = 'Потребителят @' . ($r['author_name'] ?? 'потребител') . ' е блокиран';
+            $r['content'] = '';
+        } else {
+            $r['is_blocked'] = 0;
+        }
+    }
+
+    send_list_json($rows, ['page' => $paging['page'], 'pageSize' => $paging['pageSize'], 'total' => $total]);
 }
 
 if ($method === 'POST') {
@@ -56,6 +98,47 @@ if ($method === 'POST') {
         $postId = validate_int_id('post_id', $d['post_id'] ?? null);
         $pdo->prepare('UPDATE posts SET view_count = view_count + 1 WHERE id = ?')->execute([$postId]);
         send_json(['status' => 'ok']);
+    }
+
+    if (($d['action'] ?? '') === 'reblog') {
+        $title = validate_required_string('title', $d['title'] ?? null, 1, 200);
+        $content = validate_required_string('content', $d['content'] ?? null, 1, 10000);
+        $origIdRaw = $d['original_post_id'] ?? null;
+        $origId = (is_numeric($origIdRaw) && (int)$origIdRaw > 0) ? (int)$origIdRaw : null;
+
+        if (!$origId) {
+            send_problem(400, 'Bad Request', 'Missing original_post_id', null, null, $_SERVER['REQUEST_URI'] ?? null);
+        }
+
+        $sourceStmt = $pdo->prepare('SELECT id, author_id, original_post_id, title, content FROM posts WHERE id = ?');
+        $sourceStmt->execute([$origId]);
+        $sourcePost = $sourceStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$sourcePost) {
+            send_problem(404, 'Not Found', 'Original post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
+        }
+
+        $originalRootId = (int)($sourcePost['original_post_id'] ?? 0) > 0 ? (int)$sourcePost['original_post_id'] : (int)$sourcePost['id'];
+        $alreadyReblogged = $pdo->prepare('SELECT id FROM posts WHERE author_id = ? AND original_post_id IS NOT NULL AND COALESCE(original_post_id, id) = ? LIMIT 1');
+        $alreadyReblogged->execute([$authUserId, $originalRootId]);
+
+        if ($alreadyReblogged->fetch()) {
+            send_problem(409, 'Conflict', 'You can only reblog this post once', null, ['original_post_id' => 'already_reblogged'], $_SERVER['REQUEST_URI'] ?? null);
+        }
+
+        $charCount = mb_strlen(strip_tags($content));
+        $readingTime = max(1, round($charCount / 5.75 / 180));
+        $stmt = $pdo->prepare('INSERT INTO posts (title, content, author_id, original_post_id, reading_time_minutes, view_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, UTC_TIMESTAMP(), NULL)');
+        $stmt->execute([$title, $content, $authUserId, $originalRootId, $readingTime]);
+        $newPostId = $pdo->lastInsertId();
+
+        $originalAuthorId = $sourcePost['author_id'] ?? null;
+        if ($originalAuthorId && (string)$originalAuthorId !== (string)$authUserId) {
+            $pdo->prepare('UPDATE users SET reputation_score = reputation_score + 1 WHERE id = ?')->execute([$originalAuthorId]);
+            addNotification($pdo, $originalAuthorId, $authUserId, 'reblog', 'Някой реблогна публикацията ви: ' . $sourcePost['title'], $origId);
+        }
+
+        send_json(['id' => $newPostId], 201);
     }
 
     if (($d['action'] ?? '') === 'unreblog') {
@@ -69,10 +152,14 @@ if ($method === 'POST') {
         if (!$sourcePost) send_problem(404, 'Not Found', 'Original post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
         $originalRootId = (int)($sourcePost['original_post_id'] ?? 0) > 0 ? (int)$sourcePost['original_post_id'] : (int)$sourcePost['id'];
 
-        $findStmt = $pdo->prepare('SELECT id, original_post_id FROM posts WHERE author_id = ? AND COALESCE(original_post_id, id) = ? LIMIT 1');
+        $findStmt = $pdo->prepare('SELECT id, original_post_id FROM posts WHERE author_id = ? AND original_post_id IS NOT NULL AND COALESCE(original_post_id, id) = ? LIMIT 1');
         $findStmt->execute([$authUserId, $originalRootId]);
         $reblog = $findStmt->fetch(PDO::FETCH_ASSOC);
         if (!$reblog) send_problem(404, 'Not Found', 'Reblog not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
+
+        if ((int)($reblog['id'] ?? 0) === (int)$originalRootId) {
+            send_problem(400, 'Bad Request', 'Cannot remove the original post via unreblog', null, null, $_SERVER['REQUEST_URI'] ?? null);
+        }
 
         $delStmt = $pdo->prepare('DELETE FROM posts WHERE id = ?');
         $delStmt->execute([(int)$reblog['id']]);
@@ -81,7 +168,7 @@ if ($method === 'POST') {
         $origAuthorStmt->execute([$originalRootId]);
         $origAuthorId = $origAuthorStmt->fetchColumn();
         if ($origAuthorId && (string)$origAuthorId !== (string)$authUserId) {
-            $pdo->prepare('UPDATE users SET reputation_score = reputation_score - 3 WHERE id = ?')->execute([$origAuthorId]);
+            $pdo->prepare('UPDATE users SET reputation_score = reputation_score - 1 WHERE id = ?')->execute([$origAuthorId]);
         }
 
         send_json(['status' => 'deleted']);
@@ -94,10 +181,10 @@ if ($method === 'POST') {
         $userId = $authUserId;
 
         $check = $pdo->prepare('SELECT id FROM post_likes WHERE post_id = ? AND user_id = ?');
-        $check->execute([$targetId, $userId]);
+        $check->execute([$postId, $userId]);
 
-        $authorStmt = $pdo->prepare('SELECT p.author_id, u.username, p.title FROM posts p JOIN users u ON p.author_id = u.id WHERE p.id = ?');
-        $authorStmt->execute([$targetId]);
+        $authorStmt = $pdo->prepare('SELECT p.author_id, p.title FROM posts p WHERE p.id = ?');
+        $authorStmt->execute([$postId]);
         $postInfo = $authorStmt->fetch(PDO::FETCH_ASSOC);
         if (!$postInfo) {
             send_problem(404, 'Not Found', 'Post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
@@ -105,15 +192,15 @@ if ($method === 'POST') {
 
         $authorId = $postInfo['author_id'] ?? null;
         if ($check->fetch()) {
-            $pdo->prepare('DELETE FROM post_likes WHERE post_id = ? AND user_id = ?')->execute([$targetId, $userId]);
+            $pdo->prepare('DELETE FROM post_likes WHERE post_id = ? AND user_id = ?')->execute([$postId, $userId]);
             if ($authorId && (string)$authorId !== (string)$userId) {
                 $pdo->prepare('UPDATE users SET reputation_score = reputation_score - 1 WHERE id = ?')->execute([$authorId]);
             }
         } else {
-            $pdo->prepare("INSERT INTO post_likes (post_id, user_id) VALUES (?, ?)")->execute([$targetId, $userId]);
+            $pdo->prepare("INSERT INTO post_likes (post_id, user_id) VALUES (?, ?)")->execute([$postId, $userId]);
             if ($authorId && (string)$authorId !== (string)$userId) {
                 $pdo->prepare('UPDATE users SET reputation_score = reputation_score + 1 WHERE id = ?')->execute([$authorId]);
-                addNotification($pdo, $authorId, $userId, 'like', 'Някой хареса публикацията ви: ' . $postInfo['title'], $targetId);
+                addNotification($pdo, $authorId, $userId, 'like', 'Някой хареса публикацията ви: ' . $postInfo['title'], $postId);
             }
         }
         send_json(['status' => 'ok']);
@@ -124,28 +211,8 @@ if ($method === 'POST') {
     $origIdRaw = $d['original_post_id'] ?? null;
     $origId = (is_numeric($origIdRaw) && (int)$origIdRaw > 0) ? (int)$origIdRaw : null;
 
-    if ($origId) {
-        $sourceStmt = $pdo->prepare('SELECT id, author_id, original_post_id FROM posts WHERE id = ?');
-        $sourceStmt->execute([$origId]);
-        $sourcePost = $sourceStmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$sourcePost) {
-            send_problem(404, 'Not Found', 'Original post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
-        }
-
-        $originalRootId = (int)($sourcePost['original_post_id'] ?? 0) > 0 ? (int)$sourcePost['original_post_id'] : (int)$sourcePost['id'];
-        $alreadyReblogged = $pdo->prepare('SELECT id FROM posts WHERE author_id = ? AND COALESCE(original_post_id, id) = ? LIMIT 1');
-        $alreadyReblogged->execute([$authUserId, $originalRootId]);
-
-        if ($alreadyReblogged->fetch()) {
-            send_problem(409, 'Conflict', 'You can only reblog this post once', null, ['original_post_id' => 'already_reblogged'], $_SERVER['REQUEST_URI'] ?? null);
-        }
-
-        $origId = $originalRootId;
-    }
-
-    $wordCount = str_word_count(strip_tags($content));
-    $readingTime = max(1, ceil($wordCount / 200));
+    $charCount = mb_strlen(strip_tags($content));
+    $readingTime = max(1, round($charCount / 5.75 / 180));
 
     $stmt = $pdo->prepare('INSERT INTO posts (title, content, author_id, original_post_id, reading_time_minutes, view_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, UTC_TIMESTAMP(), NULL)');
     $stmt->execute([$title, $content, $authUserId, $origId, $readingTime]);
@@ -158,12 +225,19 @@ if ($method === 'POST') {
         $originalAuthorId = $original['author_id'] ?? null;
 
         if ($originalAuthorId && (string)$originalAuthorId !== (string)$authUserId) {
-            $pdo->prepare('UPDATE users SET reputation_score = reputation_score + 3 WHERE id = ?')->execute([$originalAuthorId]);
+            $pdo->prepare('UPDATE users SET reputation_score = reputation_score + 1 WHERE id = ?')->execute([$originalAuthorId]);
             addNotification($pdo, $originalAuthorId, $authUserId, 'reblog', 'Някой реблогна публикацията ви: ' . $original['title'], $origId);
         }
     }
 
-    send_json(['id' => $newPostId], 201);
+    $postStmt = $pdo->prepare('SELECT id, title, content, author_id, original_post_id, reading_time_minutes, is_published, view_count, created_at, updated_at FROM posts WHERE id = ?');
+    $postStmt->execute([$newPostId]);
+    $post = $postStmt->fetch(PDO::FETCH_ASSOC);
+    if ($post) {
+        $post['created_at'] = iso8601_or_null($post['created_at']);
+        $post['updated_at'] = iso8601_or_null($post['updated_at']);
+    }
+    send_json($post, 201);
 }
 
 if ($method === 'PUT') {
@@ -189,7 +263,15 @@ if ($method === 'PUT') {
     $content = validate_required_string('content', $d['content'] ?? null, 1, 10000);
     $stmt = $pdo->prepare('UPDATE posts SET title = ?, content = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?');
     $stmt->execute([$title, $content, $id]);
-    send_json(['status' => 'updated']);
+
+    $postStmt = $pdo->prepare('SELECT id, title, content, author_id, original_post_id, reading_time_minutes, is_published, view_count, created_at, updated_at FROM posts WHERE id = ?');
+    $postStmt->execute([$id]);
+    $post = $postStmt->fetch(PDO::FETCH_ASSOC);
+    if ($post) {
+        $post['created_at'] = iso8601_or_null($post['created_at']);
+        $post['updated_at'] = iso8601_or_null($post['updated_at']);
+    }
+    send_json($post);
 }
 
 if ($method === 'DELETE') {

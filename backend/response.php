@@ -9,28 +9,21 @@ function send_json($data, int $statusCode = 200): void {
 
 function send_problem(int $statusCode, string $title, ?string $detail = null, $errors = null, $extra = null, ?string $instance = null): void {
     http_response_code($statusCode);
-    header('Content-Type: application/problem+json; charset=UTF-8');
+    header('Content-Type: application/json; charset=UTF-8');
 
     $payload = [
-        'type' => 'about:blank',
-        'title' => $title,
+        'message' => $detail ?? $title,
         'status' => $statusCode,
     ];
 
-    if ($detail !== null) {
-        $payload['detail'] = $detail;
+    if ($errors !== null) {
+        $payload['details'] = is_string($errors) ? $errors : json_encode($errors, JSON_UNESCAPED_UNICODE);
+    } elseif ($extra !== null) {
+        $payload['details'] = is_string($extra) ? $extra : json_encode($extra, JSON_UNESCAPED_UNICODE);
     }
 
     if ($instance !== null) {
         $payload['instance'] = $instance;
-    }
-
-    if ($errors !== null) {
-        $payload['errors'] = $errors;
-    }
-
-    if ($extra !== null) {
-        $payload['extra'] = $extra;
     }
 
     echo json_encode($payload, JSON_UNESCAPED_UNICODE);
@@ -49,6 +42,44 @@ function read_json_body(): array {
     }
 
     return $decoded;
+}
+
+function iso8601_or_null($value): ?string {
+    if ($value === null) return null;
+    try {
+        if (is_numeric($value)) {
+            $ts = (int)floor((int)$value / 1000);
+            return gmdate(DATE_ATOM, $ts);
+        }
+        $dt = new DateTime($value, new DateTimeZone('UTC'));
+        return $dt->format(DateTime::ATOM);
+    } catch (Exception $e) {
+        return (string)$value;
+    }
+}
+
+function send_list_json(array $data, array $paging): void {
+    $page = (int)($paging['page'] ?? 1);
+    $pageSize = (int)($paging['pageSize'] ?? count($data));
+    $total = isset($paging['total']) ? (int)$paging['total'] : count($data);
+    $totalPages = $pageSize > 0 ? (int)ceil($total / $pageSize) : 1;
+
+    http_response_code(200);
+    header('Content-Type: application/json; charset=UTF-8');
+    $payload = [
+        'data' => $data,
+        'pagination' => [
+            'page' => $page,
+            'pageSize' => $pageSize,
+            'total' => $total,
+            'totalPages' => $totalPages,
+        ],
+    ];
+    if (isset($paging['meta']) && is_array($paging['meta'])) {
+        $payload['meta'] = $paging['meta'];
+    }
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE);
+    exit();
 }
 
 function build_paging(): array {

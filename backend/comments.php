@@ -18,10 +18,30 @@ if ($method === 'GET') {
     $postId = validate_int_id('post_id', $_GET['post_id'] ?? null);
     $paging = build_paging();
     $sort = build_sort(['created_at', 'id'], 'created_at', 'asc');
-    $query = "SELECT comments.*, UNIX_TIMESTAMP(comments.created_at) * 1000 as created_ts, users.username, users.avatar FROM comments JOIN users ON comments.user_id = users.id WHERE post_id = ? ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
+    $query = "SELECT comments.*, UNIX_TIMESTAMP(comments.created_at) * 1000 as created_ts, users.username, users.avatar, (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = comments.id) as likes_count, (SELECT COUNT(*) FROM comment_likes cl2 WHERE cl2.comment_id = comments.id AND cl2.user_id = ?) as is_liked FROM comments JOIN users ON comments.user_id = users.id WHERE post_id = ? ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
     $stmt = $pdo->prepare($query);
-    $stmt->execute([$postId]);
-    send_json($stmt->fetchAll(PDO::FETCH_ASSOC));
+    $stmt->execute([$authUserId, $postId]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $blockedStmt = $pdo->prepare('SELECT blocked_id FROM blocks WHERE blocker_id = ?');
+    $blockedStmt->execute([$authUserId]);
+    $blockedRows = $blockedStmt->fetchAll(PDO::FETCH_COLUMN, 0);
+
+    $countStmt = $pdo->prepare('SELECT COUNT(*) FROM comments WHERE post_id = ?');
+    $countStmt->execute([$postId]);
+    $total = (int)$countStmt->fetchColumn();
+
+    foreach ($rows as &$r) {
+        if (isset($r['created_ts'])) $r['created_at'] = iso8601_or_null($r['created_ts']);
+        if (in_array((int)($r['user_id'] ?? 0), $blockedRows, true)) {
+            $r['is_blocked'] = 1;
+            $r['content'] = 'Потребителят @' . ($r['username'] ?? 'потребител') . ' е блокиран';
+        } else {
+            $r['is_blocked'] = 0;
+        }
+    }
+
+    send_list_json($rows, ['page' => $paging['page'], 'pageSize' => $paging['pageSize'], 'total' => $total]);
 }
 
 if ($method === 'POST') {
@@ -65,7 +85,14 @@ if ($method === 'POST') {
         }
     }
 
-    send_json(['status' => 'ok', 'is_approved' => $isApproved]);
+    $commentStmt = $pdo->prepare('SELECT id, post_id, user_id, parent_id, content, spam_score, is_approved, created_at, updated_at FROM comments WHERE id = ?');
+    $commentStmt->execute([$commentId]);
+    $comment = $commentStmt->fetch(PDO::FETCH_ASSOC);
+    if ($comment) {
+        $comment['created_at'] = iso8601_or_null($comment['created_at']);
+        $comment['updated_at'] = iso8601_or_null($comment['updated_at']);
+    }
+    send_json($comment, 201);
 }
 
 if ($method === 'PUT') {
@@ -85,7 +112,15 @@ if ($method === 'PUT') {
 
     $content = validate_required_string('content', $d['content'] ?? null, 1, 2000);
     $pdo->prepare('UPDATE comments SET content = ?, updated_at = NOW() WHERE id = ?')->execute([$content, $id]);
-    send_json(['status' => 'updated']);
+
+    $commentStmt = $pdo->prepare('SELECT id, post_id, user_id, parent_id, content, spam_score, is_approved, created_at, updated_at FROM comments WHERE id = ?');
+    $commentStmt->execute([$id]);
+    $comment = $commentStmt->fetch(PDO::FETCH_ASSOC);
+    if ($comment) {
+        $comment['created_at'] = iso8601_or_null($comment['created_at']);
+        $comment['updated_at'] = iso8601_or_null($comment['updated_at']);
+    }
+    send_json($comment);
 }
 
 if ($method === 'DELETE') {

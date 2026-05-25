@@ -96,7 +96,7 @@ npm run dev
 - `http://localhost:5173`
 
 🔸 **Backend API (PHP REST API)**  
-- `http://localhost/uni-api`
+- `http://localhost/backend`
 
 ---
 

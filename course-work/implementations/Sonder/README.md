@@ -68,7 +68,7 @@ xampp/htdocs/backend
 Създайте MySQL база данни с име:
 
 ```txt
-sonder_db
+backend
 ```
 
 Импортирайте файла:

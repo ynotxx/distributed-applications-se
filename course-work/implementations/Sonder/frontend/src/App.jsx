@@ -68,7 +68,7 @@ function AppContent() {
   const unreadCount = serverNotifications.filter(n => !n.is_read).length;
   const [showActivity, setShowActivity] = useState(false);
   const notificationsPanelRef = useRef(null);
-  const [followState, setFollowState] = useState({ is_following: false });
+  const [followState, setFollowState] = useState({ is_following: false, follow_id: null });
   const [myFollows, setMyFollows] = useState([]);
   const [isBlockedUser, setIsBlockedUser] = useState(false);
   const [followQuery, setFollowQuery] = useState('');
@@ -238,13 +238,16 @@ function AppContent() {
 
   const fetchFollowState = (user) => {
     if (!currentUser || !user || String(currentUser.id) === String(user.id)) {
-      setFollowState({ is_following: false });
+      setFollowState({ is_following: false, follow_id: null });
       return;
     }
     apiFetch(`/follows.php?profile_id=${user.id}`)
       .then(res => res.json())
-      .then(data => setFollowState(data))
-      .catch(() => setFollowState({ is_following: false }));
+      .then(data => setFollowState({
+        is_following: !!data?.is_following,
+        follow_id: data?.follow_id ?? null,
+      }))
+      .catch(() => setFollowState({ is_following: false, follow_id: null }));
   };
 
   const fetchMyFollows = () => {
@@ -262,7 +265,7 @@ function AppContent() {
       .then(data => {
         const rows = Array.isArray(data) ? data : (data && Array.isArray(data.data) ? data.data : []);
         const now = Date.now();
-        const ACTIVE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+        const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
         const mapped = rows.map(f => {
           const otherUsername = f.other_username || (() => {
             const otherId = (String(f.follower_id) === String(currentUser.id)) ? f.following_id : f.follower_id;
@@ -295,16 +298,38 @@ function AppContent() {
 
   const handleToggleFollow = () => {
     if (!currentUser || !profileUser || isMyProfile) return;
-    apiFetch(`/follows.php`, {
-      method: 'POST',
-      body: JSON.stringify({ follower_id: currentUser.id, following_id: profileUser.id })
-    })
-      .then(res => res.json())
-      .then(data => {
-        setFollowState({ is_following: data.following });
+
+    const nextFollowing = !followState.is_following;
+    const nextState = { is_following: nextFollowing, follow_id: nextFollowing ? followState.follow_id : null };
+
+    setFollowState(nextState);
+
+    const request = nextFollowing
+      ? apiFetch(`/follows.php`, {
+          method: 'POST',
+          body: JSON.stringify({ follower_id: currentUser.id, following_id: profileUser.id })
+        })
+      : apiFetch(`/follows.php?id=${followState.follow_id}`, { method: 'DELETE' });
+
+    request
+      .then(async res => {
+        const data = await res.json();
+        if (nextFollowing) {
+          const createdId = data?.id ?? null;
+          setFollowState({ is_following: true, follow_id: createdId });
+          showMsg('Последвахте потребителя.');
+        } else {
+          setFollowState({ is_following: false, follow_id: null });
+          showMsg('Спряхте да следвате потребителя.');
+        }
         fetchUsers();
+        fetchProfileUser(profileSlug);
         fetchNotifications();
-        showMsg(data.following ? 'Последвахте потребителя.' : 'Спряхте да следвате потребителя.');
+      })
+      .catch(() => {
+        setFollowState(prev => ({ ...prev, is_following: !nextFollowing }));
+        fetchFollowState(profileUser);
+        showMsg('Грешка при follow/unfollow.');
       });
   };
 

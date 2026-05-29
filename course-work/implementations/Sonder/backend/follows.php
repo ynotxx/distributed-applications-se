@@ -18,7 +18,8 @@ if ($method === 'GET') {
 
         $stmt = $pdo->prepare('SELECT id FROM follows WHERE follower_id = ? AND following_id = ?');
         $stmt->execute([$authUserId, $profileId]);
-        send_json(['is_following' => (bool)$stmt->fetch()]);
+        $followId = $stmt->fetchColumn();
+        send_json(['is_following' => (bool)$followId, 'follow_id' => $followId ? (int)$followId : null]);
     }
 
     
@@ -90,11 +91,12 @@ if ($method === 'POST') {
         send_problem(400, 'Validation Error', 'Invalid follow request', null, null, $_SERVER['REQUEST_URI'] ?? null);
     }
 
-    $check = $pdo->prepare('SELECT id FROM follows WHERE follower_id = ? AND following_id = ?');
+    $check = $pdo->prepare('SELECT id, following_id FROM follows WHERE follower_id = ? AND following_id = ?');
     $check->execute([$authUserId, $followingId]);
     $existing = $check->fetch(PDO::FETCH_ASSOC);
 
     if ($existing) {
+        addNotification($pdo, (int)$existing['following_id'], $authUserId, 'unfollow', 'Някой спря да ви следва.');
         $pdo->prepare('DELETE FROM follows WHERE id = ?')->execute([$existing['id']]);
         $pdo->prepare('UPDATE users SET reputation_score = reputation_score - 2 WHERE id = ?')->execute([$followingId]);
         send_json(['following' => false]);
@@ -157,14 +159,16 @@ if ($method === 'DELETE') {
     $id = isset($_GET['id']) && is_numeric($_GET['id']) ? (int)$_GET['id'] : null;
     if (!$id) send_problem(400, 'Bad Request', 'Missing id', null, null, $_SERVER['REQUEST_URI'] ?? null);
 
-    $stmt = $pdo->prepare('SELECT follower_id FROM follows WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT follower_id, following_id FROM follows WHERE id = ?');
     $stmt->execute([$id]);
-    $followerId = $stmt->fetchColumn();
-    if (!$followerId) send_problem(404, 'Not Found', 'Follow not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
+    $followRow = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$followRow) send_problem(404, 'Not Found', 'Follow not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
 
     $isAdmin = (int)($authUser['is_admin'] ?? 0) === 1;
-    if (!$isAdmin && (int)$followerId !== $authUserId) send_problem(403, 'Forbidden', 'You cannot delete this follow', null, null, $_SERVER['REQUEST_URI'] ?? null);
+    if (!$isAdmin && (int)$followRow['follower_id'] !== $authUserId) send_problem(403, 'Forbidden', 'You cannot delete this follow', null, null, $_SERVER['REQUEST_URI'] ?? null);
 
+    addNotification($pdo, (int)$followRow['following_id'], $authUserId, 'unfollow', 'Някой спря да ви следва.');
+    $pdo->prepare('UPDATE users SET reputation_score = reputation_score - 2 WHERE id = ?')->execute([(int)$followRow['following_id']]);
     $pdo->prepare('DELETE FROM follows WHERE id = ?')->execute([$id]);
     send_json(['status' => 'deleted']);
 }

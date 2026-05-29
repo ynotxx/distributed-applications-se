@@ -59,13 +59,16 @@ function AppContent() {
   const [viewedPosts, setViewedPosts] = useState(new Set());
   const [searchTerm, setSearchTerm] = useState('');
   const [userSearch, setUserSearch] = useState('');
+  const [userSortMode, setUserSortMode] = useState('reputation_desc');
   const [currentPage, setCurrentPage] = useState(1);
   const [sortMode, setSortMode] = useState('newest');
   const [feedMode, setFeedMode] = useState('global');
   const [theme, setTheme] = useState(getStoredTheme());
   const [activityLog, setActivityLog] = useState([]);
   const [serverNotifications, setServerNotifications] = useState([]);
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const unreadCount = serverNotifications.filter(n => !n.is_read).length;
+  const visibleNotifications = showUnreadOnly ? serverNotifications.filter(n => !n.is_read) : serverNotifications;
   const [showActivity, setShowActivity] = useState(false);
   const notificationsPanelRef = useRef(null);
   const [followState, setFollowState] = useState({ is_following: false, follow_id: null });
@@ -87,6 +90,15 @@ function AppContent() {
   const [newAvatar, setNewAvatar] = useState('');
   const [showOptions, setShowOptions] = useState(false);
   const filteredUsers = users.filter(u => u.username.toLowerCase().includes(userSearch.toLowerCase()));
+  const visibleUsers = [...filteredUsers].sort((a, b) => {
+    if (userSortMode === 'reputation_asc') {
+      return (Number(a.reputation_score) || 0) - (Number(b.reputation_score) || 0) || a.username.localeCompare(b.username);
+    }
+    if (userSortMode === 'username_asc') {
+      return a.username.localeCompare(b.username);
+    }
+    return (Number(b.reputation_score) || 0) - (Number(a.reputation_score) || 0) || a.username.localeCompare(b.username);
+  });
 
   const postsPerPage = 5;
 
@@ -192,6 +204,31 @@ function AppContent() {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showActivity]);
+
+  useEffect(() => {
+    const handleSelectAll = (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      const isTextField = target.matches('input, textarea') || target.isContentEditable;
+      if (!isTextField) return;
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return;
+
+      e.preventDefault();
+
+      if (typeof target.select === 'function') {
+        target.select();
+        return;
+      }
+
+      const value = typeof target.value === 'string' ? target.value : '';
+      if (typeof target.setSelectionRange === 'function') {
+        target.setSelectionRange(0, value.length);
+      }
+    };
+
+    document.addEventListener('keydown', handleSelectAll, true);
+    return () => document.removeEventListener('keydown', handleSelectAll, true);
+  }, []);
  
 
   const markNotificationsRead = () => {
@@ -223,7 +260,7 @@ function AppContent() {
 
   const deleteNotification = (id) => {
     if (!currentUser) return;
-    if (!window.confirm('Да изтрия ли известието?')) return;
+    if (!window.confirm('Изтриване на известието?')) return;
     setServerNotifications(prev => prev.filter(n => n.id !== id));
     apiFetch(`/notifications.php?id=${id}`, { method: 'DELETE' })
       .then(async res => {
@@ -521,6 +558,12 @@ function AppContent() {
 
       if (hash === '/users') {
         setView('users');
+        setProfileSlug('');
+        return;
+      }
+
+      if (hash === '/people') {
+        setView('people');
         setProfileSlug('');
         return;
       }
@@ -893,9 +936,16 @@ function AppContent() {
             <div ref={notificationsPanelRef} style={{ position: 'absolute', top: '42px', right: 0, width: '420px', backgroundColor: colors.card, color: colors.text, border: `1px solid ${colors.border}`, borderRadius: '10px', zIndex: 900, boxShadow: '0 8px 20px rgba(0,0,0,0.18)', display: 'flex', flexDirection: 'column', maxHeight: '600px' }}>
               <div style={{ padding: '12px', borderBottom: `1px solid ${colors.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
                 <strong>Известия ({serverNotifications.length})</strong>
+                <button 
+                  onClick={() => setShowUnreadOnly(!showUnreadOnly)}
+                  className="btn btn-default" 
+                  style={{ padding: '4px 10px', fontSize: '12px', whiteSpace: 'nowrap' }}
+                >
+                  {showUnreadOnly ? 'Всички' : 'Само непрочетени'}
+                </button>
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                   <button onClick={markNotificationsRead} className="btn btn-default" style={{ padding: '4px 10px', fontSize: '12px', whiteSpace: 'nowrap' }}>Прочети всички</button>
-                  {serverNotifications.length > 0 && <button onClick={() => { if(window.confirm('Да изтрия ли всички известия?')) apiFetch('/notifications.php?action=delete_all', { method: 'DELETE' }).then(async res => { try { const data = await res.json(); console.log('Delete all response:', data); if(data && data.unread_count !== undefined) setUnreadCount(data.unread_count); } catch(e){} fetchNotifications(); showMsg('Всички известия са изтрити.'); }).catch(e => console.error('Delete all error:', e)); }} className="btn btn-danger" style={{ padding: '4px 10px', fontSize: '12px', whiteSpace: 'nowrap' }}>Изтрий всички</button>}
+                  {serverNotifications.length > 0 && <button onClick={() => { if(window.confirm('Изтриване на всички известия?')) apiFetch('/notifications.php?action=delete_all', { method: 'DELETE' }).then(async res => { try { const data = await res.json(); console.log('Delete all response:', data); if(data && data.unread_count !== undefined) setUnreadCount(data.unread_count); } catch(e){} fetchNotifications(); showMsg('Всички известия са изтрити.'); }).catch(e => console.error('Delete all error:', e)); }} className="btn btn-danger" style={{ padding: '4px 10px', fontSize: '12px', whiteSpace: 'nowrap' }}>Изтрий всички</button>}
                 </div>
               </div>
               <div style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', minHeight: '200px' }}>
@@ -903,7 +953,7 @@ function AppContent() {
                   <p style={{ color: colors.muted, marginBottom: 0, fontSize: '13px' }}>Няма нова активност.</p>
                 ) : (
                   <>
-                    {serverNotifications.map(n => (
+                    {visibleNotifications.map(n => (
                       <div key={`server-${n.id}`} style={{ fontSize: '13px', display: 'flex', gap: '10px', alignItems: 'flex-start', justifyContent: 'space-between', backgroundColor: n.is_read ? (isDark ? '#1a1f2e' : '#f5f5f5') : (isDark ? 'rgba(100, 150, 200, 0.2)' : 'rgba(59, 130, 246, 0.15)'), padding: '10px', borderRadius: '6px', border: n.is_read ? `1px solid ${colors.subtleBorder}` : `1px solid ${colors.primary}` }}>
                         <div style={{ flex: 1 }}>
                           <div style={{ fontWeight: n.is_read ? 'normal' : 'bold', color: n.is_read ? colors.muted : colors.primary }}>{n.message}</div>
@@ -931,7 +981,8 @@ function AppContent() {
       <nav style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
         <button onClick={() => { setFeedMode('global'); changeView('posts'); setCurrentPage(1); setSearchTerm(''); }} style={{ backgroundColor: view === 'posts' && feedMode === 'global' ? colors.primary : colors.card, color: view === 'posts' && feedMode === 'global' ? '#fff' : colors.text, padding: '8px 16px', border: `1px solid ${colors.border}`, borderRadius: '4px', cursor: 'pointer' }}>Начало</button>
         <button onClick={() => { setFeedMode('following'); changeView('posts'); setCurrentPage(1); setSearchTerm(''); }} style={{ backgroundColor: view === 'posts' && feedMode === 'following' ? colors.primary : colors.card, color: view === 'posts' && feedMode === 'following' ? '#fff' : colors.text, padding: '8px 16px', border: `1px solid ${colors.border}`, borderRadius: '4px', cursor: 'pointer' }}>Следвани</button>
-        {isAdmin() && <button onClick={() => changeView('users')} style={{ backgroundColor: view === 'users' ? colors.primary : colors.card, color: view === 'users' ? '#fff' : colors.text, padding: '8px 16px', border: `1px solid ${colors.border}`, borderRadius: '4px', cursor: 'pointer' }}>Потребители</button>}
+        <button onClick={() => changeView('people')} style={{ backgroundColor: view === 'people' ? colors.primary : colors.card, color: view === 'people' ? '#fff' : colors.text, padding: '8px 16px', border: `1px solid ${colors.border}`, borderRadius: '4px', cursor: 'pointer' }}>Търси потребители</button>
+        {isAdmin() && <button onClick={() => changeView('users')} style={{ backgroundColor: view === 'users' ? colors.primary : colors.card, color: view === 'users' ? '#fff' : colors.text, padding: '8px 16px', border: `1px solid ${colors.border}`, borderRadius: '4px', cursor: 'pointer' }}>Потребители (админ)</button>}
         <button onClick={() => openProfile(currentUser)} style={{ backgroundColor: view === 'profile' && isMyProfile ? colors.primary : colors.card, color: view === 'profile' && isMyProfile ? '#fff' : colors.text, padding: '8px 16px', border: `1px solid ${colors.border}`, borderRadius: '4px', cursor: 'pointer' }}>Моят Профил</button>
       </nav>
 
@@ -941,6 +992,7 @@ function AppContent() {
             <form onSubmit={handleAddPost} className="form-group">
               <input placeholder="Заглавие..." value={postTitle} onChange={e => setPostTitle(e.target.value)} required style={{ width: '100%', marginBottom: '10px', padding: '8px', border: `1px solid ${colors.border}`, backgroundColor: colors.input, color: colors.text }} />
               <textarea placeholder="Какво е на ума ти..." value={postContent} onChange={e => setPostContent(e.target.value)} required style={{ width: '100%', minHeight: '80px', marginBottom: '10px', padding: '8px', border: `1px solid ${colors.border}`, backgroundColor: colors.input, color: colors.text }} />
+              <div style={{ marginBottom: '10px', color: colors.muted, fontSize: '13px' }}>{postContent.length} символа</div>
               <button type="submit" className="btn btn-primary">Публикувай</button>
             </form>
           </div>
@@ -1075,6 +1127,69 @@ function AppContent() {
         </section>
       )}
 
+      {view === 'people' && (
+        <section>
+          <h2 style={{ color: colors.text }}>Потребители</h2>
+          <input 
+            type="text" 
+            placeholder="Търси потребител..."
+            value={userSearch}
+            onChange={e => setUserSearch(e.target.value)}
+            style={{ width: '100%', marginBottom: '20px', padding: '8px', border: `1px solid ${colors.border}`, backgroundColor: colors.input, color: colors.text }} 
+          />
+          <select
+            value={userSortMode}
+            onChange={e => setUserSortMode(e.target.value)}
+            style={{ width: '100%', marginBottom: '20px', padding: '8px', border: `1px solid ${colors.border}`, backgroundColor: colors.input, color: colors.text }}
+          >
+            <option value="reputation_desc">Сортиране: най-висока репутация</option>
+            <option value="reputation_asc">Сортиране: най-ниска репутация</option>
+            <option value="username_asc">Сортиране: име A-Z</option>
+          </select>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', marginTop: '20px', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: `2px solid ${colors.border}`, textAlign: 'left' }}>
+                  <th style={{ padding: '8px' }}>Потребител</th>
+                  <th style={{ padding: '8px' }}>Репутация</th>
+                  <th style={{ padding: '8px' }}>Профил</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleUsers.map(u => (
+                  <tr key={u.id} style={{ borderBottom: `1px solid ${colors.subtleBorder}` }}>
+                    <td style={{ padding: '8px' }}>
+                      <button
+                        type="button"
+                        onClick={() => openProfile(u)}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          background: 'none',
+                          border: 'none',
+                          padding: 0,
+                          color: colors.link,
+                          cursor: 'pointer',
+                          font: 'inherit'
+                        }}
+                      >
+                        <img src={u.avatar || DEFAULT_AVATAR} alt="avatar" style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover' }} />
+                        <span>@{u.username}</span>
+                      </button>
+                    </td>
+                    <td style={{ padding: '8px', color: colors.accent, fontWeight: 'bold' }}>{u.reputation_score || 0}</td>
+                    <td style={{ padding: '8px' }}>
+                      <button onClick={() => openProfile(u)} className="btn btn-default" style={{ fontSize: '11px', padding: '2px 5px' }}>Отвори</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {view === 'users' && isAdmin() && (
         <section>
           <h2 style={{ color: colors.text }}>Всички потребители</h2>
@@ -1085,6 +1200,15 @@ function AppContent() {
             onChange={e => setUserSearch(e.target.value)}
             style={{ width: '100%', marginBottom: '20px', padding: '8px', border: `1px solid ${colors.border}`, backgroundColor: colors.input, color: colors.text }} 
           />
+          <select
+            value={userSortMode}
+            onChange={e => setUserSortMode(e.target.value)}
+            style={{ width: '100%', marginBottom: '20px', padding: '8px', border: `1px solid ${colors.border}`, backgroundColor: colors.input, color: colors.text }}
+          >
+            <option value="reputation_desc">Сортиране: най-висока репутация</option>
+            <option value="reputation_asc">Сортиране: най-ниска репутация</option>
+            <option value="username_asc">Сортиране: име A-Z</option>
+          </select>
           <table style={{ width: '100%', marginTop: '20px', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ borderBottom: `2px solid ${colors.border}`, textAlign: 'left' }}>
@@ -1097,7 +1221,7 @@ function AppContent() {
               </tr>
             </thead>
             <tbody>
-              {filteredUsers.map(u => (
+              {visibleUsers.map(u => (
                 <tr key={u.id} style={{ borderBottom: `1px solid ${colors.subtleBorder}` }}>
                   <td style={{ padding: '8px' }}>{u.id}</td>
                   <td style={{ padding: '8px' }}>{u.username}</td>

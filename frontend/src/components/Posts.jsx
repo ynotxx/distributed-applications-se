@@ -2,7 +2,7 @@ import { useState, useEffect, useContext } from 'react';
 import AuthContext from '../AuthContext';
 import './Posts.css';
 
-const API_BASE = 'http://localhost/uni-api';
+const API_BASE = 'http://localhost/backend';
 
 const normalizeTimestamp = (ts) => {
   if (ts == null) return null;
@@ -166,7 +166,11 @@ export function PostsList() {
     setEditContent(post.content);
   };
 
-  const canEdit = (post) => currentUser && String(currentUser.id) === String(post.author_id);
+  const canEdit = (post) => {
+    if (!currentUser) return false;
+    const editableAuthorId = post.original_author_id || post.author_id;
+    return String(currentUser.id) === String(editableAuthorId);
+  };
 
   return (
     <div className="posts-container">
@@ -241,9 +245,9 @@ export function PostsList() {
               </div>
             ) : (
               <>
-                <h3>{post.title}</h3>
+                <h3>{post.original_title || post.title}</h3>
                 <p className="post-author">by {post.author_name} <span className="reputation">({post.author_reputation || 0} reputation)</span></p>
-                <p className="post-content">{post.content.substring(0, 200)}...</p>
+                <p className="post-content">{(post.original_content || post.content).substring(0, 200)}...</p>
                 <div className="post-meta">
                   <span>❤️ {post.likes_count || 0}</span>
                   <span>💬 {post.comments_count || 0}</span>

@@ -1,6 +1,6 @@
 <?php
 $host = 'localhost';
-$db   = 'uni-blog';
+$db   = 'backend';
 $user = 'root';
 $pass = '';   
 $charset = 'utf8mb4';

@@ -47,6 +47,18 @@ if ($method === 'POST') {
     $stmt->execute([$authUserId, $blockedId]);
     $newId = $pdo->lastInsertId();
 
+    $findReblogs = $pdo->prepare('SELECT p.id FROM posts p JOIN posts original ON p.original_post_id = original.id WHERE p.author_id = ? AND original.author_id = ?');
+    $findReblogs->execute([$blockedId, $authUserId]);
+    $reblogIds = $findReblogs->fetchAll(PDO::FETCH_COLUMN, 0);
+    if (!empty($reblogIds)) {
+        $delStmt = $pdo->prepare('DELETE FROM posts WHERE id = ?');
+        foreach ($reblogIds as $rid) {
+            $delStmt->execute([(int)$rid]);
+        }
+        $count = count($reblogIds);
+        $pdo->prepare('UPDATE users SET reputation_score = GREATEST(0, reputation_score - ?) WHERE id = ?')->execute([$count, $authUserId]);
+    }
+
     $stmt = $pdo->prepare('SELECT b.id, b.blocker_id, b.blocked_id, u.username as blocked_username, b.created_at FROM blocks b JOIN users u ON b.blocked_id = u.id WHERE b.id = ?');
     $stmt->execute([$newId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);

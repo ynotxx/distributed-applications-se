@@ -2,13 +2,8 @@
 
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/notification_helper.php';
 require_once __DIR__ . '/validation.php';
-
-function addNotification($pdo, $userId, $actorId, $type, $message, $postId = null, $commentId = null) {
-    if (!$userId || (string)$userId === (string)$actorId) return;
-    $stmt = $pdo->prepare("INSERT INTO notifications (user_id, actor_id, type, message, post_id, comment_id, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, NOW())");
-    $stmt->execute([$userId, $actorId, $type, $message, $postId, $commentId]);
-}
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $authUser = require_auth($pdo);
@@ -45,7 +40,7 @@ if ($method === 'GET') {
     $createdTsExpr = "UNIX_TIMESTAMP(DATE_ADD(p.created_at, INTERVAL TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) SECOND)) * 1000 as created_ts";
     $originalCreatedTsExpr = "UNIX_TIMESTAMP(DATE_ADD(original.created_at, INTERVAL TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) SECOND)) * 1000 as original_created_ts";
 
-    $query = "SELECT p.*, {$createdTsExpr}, u.username as author_name, u.avatar as author_avatar, u.reputation_score as author_reputation, orig_u.username as original_author_name, orig_u.avatar as original_author_avatar, {$originalCreatedTsExpr}, EXISTS(SELECT 1 FROM posts rp WHERE rp.author_id = ? AND rp.original_post_id IS NOT NULL AND COALESCE(rp.original_post_id, rp.id) = COALESCE(p.original_post_id, p.id)) as is_reblogged_by_me, (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = COALESCE(p.original_post_id, p.id)) as likes_count, (SELECT COUNT(*) FROM post_likes pl2 WHERE pl2.post_id = COALESCE(p.original_post_id, p.id) AND pl2.user_id = ?) as is_liked, (SELECT COUNT(*) FROM posts pp WHERE pp.original_post_id = COALESCE(p.original_post_id, p.id) OR pp.id = COALESCE(p.original_post_id, p.id)) - 1 as reblogs_count FROM posts p JOIN users u ON p.author_id = u.id LEFT JOIN posts original ON p.original_post_id = original.id LEFT JOIN users orig_u ON original.author_id = orig_u.id $whereSql ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
+    $query = "SELECT p.*, {$createdTsExpr}, u.username as author_name, u.avatar as author_avatar, u.reputation_score as author_reputation, orig_u.id as original_author_id, orig_u.username as original_author_name, orig_u.avatar as original_author_avatar, original.title as original_title, original.content as original_content, {$originalCreatedTsExpr}, EXISTS(SELECT 1 FROM posts rp WHERE rp.author_id = ? AND rp.original_post_id IS NOT NULL AND COALESCE(rp.original_post_id, rp.id) = COALESCE(p.original_post_id, p.id)) as is_reblogged_by_me, (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = COALESCE(p.original_post_id, p.id)) as likes_count, (SELECT COUNT(*) FROM post_likes pl2 WHERE pl2.post_id = COALESCE(p.original_post_id, p.id) AND pl2.user_id = ?) as is_liked, (SELECT COUNT(*) FROM posts pp WHERE pp.original_post_id = COALESCE(p.original_post_id, p.id) OR pp.id = COALESCE(p.original_post_id, p.id)) - 1 as reblogs_count FROM posts p JOIN users u ON p.author_id = u.id LEFT JOIN posts original ON p.original_post_id = original.id LEFT JOIN users orig_u ON original.author_id = orig_u.id $whereSql ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
 
     $stmt = $pdo->prepare($query);
     $stmt->execute($params);
@@ -54,6 +49,10 @@ if ($method === 'GET') {
     $blockedStmt = $pdo->prepare('SELECT blocked_id FROM blocks WHERE blocker_id = ?');
     $blockedStmt->execute([$authUserId]);
     $blockedRows = $blockedStmt->fetchAll(PDO::FETCH_COLUMN, 0);
+
+    $blockedByStmt = $pdo->prepare('SELECT blocker_id FROM blocks WHERE blocked_id = ?');
+    $blockedByStmt->execute([$authUserId]);
+    $blockedByRows = $blockedByStmt->fetchAll(PDO::FETCH_COLUMN, 0);
 
     $countWhere = [];
     $countParams = [];
@@ -76,19 +75,31 @@ if ($method === 'GET') {
     $countStmt->execute($countParams);
     $total = (int)$countStmt->fetchColumn();
 
-    foreach ($rows as &$r) {
+    $filtered = [];
+    foreach ($rows as $r) {
         if (isset($r['created_ts'])) $r['created_at'] = iso8601_or_null($r['created_ts']);
         if (isset($r['original_created_ts'])) $r['original_created_at'] = iso8601_or_null($r['original_created_ts']);
-        if (in_array((int)($r['author_id'] ?? 0), $blockedRows, true)) {
+        $authorId = (int)($r['author_id'] ?? 0);
+        $origAuthorId = (int)($r['original_author_id'] ?? 0);
+
+        if (in_array($authorId, $blockedByRows, true) || ($origAuthorId && in_array($origAuthorId, $blockedByRows, true))) {
+            continue;
+        }
+
+        if (in_array($authorId, $blockedRows, true)) {
             $r['is_blocked'] = 1;
             $r['title'] = 'Потребителят @' . ($r['author_name'] ?? 'потребител') . ' е блокиран';
             $r['content'] = '';
         } else {
             $r['is_blocked'] = 0;
         }
-    }
 
-    send_list_json($rows, ['page' => $paging['page'], 'pageSize' => $paging['pageSize'], 'total' => $total]);
+        $filtered[] = $r;
+    }
+    $hiddenCount = count($rows) - count($filtered);
+    $total = max(0, $total - $hiddenCount);
+
+    send_list_json($filtered, ['page' => $paging['page'], 'pageSize' => $paging['pageSize'], 'total' => $total]);
 }
 
 if ($method === 'POST') {
@@ -135,7 +146,7 @@ if ($method === 'POST') {
         $originalAuthorId = $sourcePost['author_id'] ?? null;
         if ($originalAuthorId && (string)$originalAuthorId !== (string)$authUserId) {
             $pdo->prepare('UPDATE users SET reputation_score = reputation_score + 1 WHERE id = ?')->execute([$originalAuthorId]);
-            addNotification($pdo, $originalAuthorId, $authUserId, 'reblog', 'Някой реблогна публикацията ви: ' . $sourcePost['title'], $origId);
+            addNotification($pdo, $originalAuthorId, $authUserId, 'reblog', 'Някой реблогна публикацията ви: ' . $sourcePost['title'], $originalRootId);
         }
 
         send_json(['id' => $newPostId], 201);
@@ -181,10 +192,10 @@ if ($method === 'POST') {
         $userId = $authUserId;
 
         $check = $pdo->prepare('SELECT id FROM post_likes WHERE post_id = ? AND user_id = ?');
-        $check->execute([$postId, $userId]);
+        $check->execute([$targetId, $userId]);
 
         $authorStmt = $pdo->prepare('SELECT p.author_id, p.title FROM posts p WHERE p.id = ?');
-        $authorStmt->execute([$postId]);
+        $authorStmt->execute([$targetId]);
         $postInfo = $authorStmt->fetch(PDO::FETCH_ASSOC);
         if (!$postInfo) {
             send_problem(404, 'Not Found', 'Post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
@@ -192,15 +203,15 @@ if ($method === 'POST') {
 
         $authorId = $postInfo['author_id'] ?? null;
         if ($check->fetch()) {
-            $pdo->prepare('DELETE FROM post_likes WHERE post_id = ? AND user_id = ?')->execute([$postId, $userId]);
+            $pdo->prepare('DELETE FROM post_likes WHERE post_id = ? AND user_id = ?')->execute([$targetId, $userId]);
             if ($authorId && (string)$authorId !== (string)$userId) {
                 $pdo->prepare('UPDATE users SET reputation_score = reputation_score - 1 WHERE id = ?')->execute([$authorId]);
             }
         } else {
-            $pdo->prepare("INSERT INTO post_likes (post_id, user_id) VALUES (?, ?)")->execute([$postId, $userId]);
+            $pdo->prepare("INSERT INTO post_likes (post_id, user_id) VALUES (?, ?)")->execute([$targetId, $userId]);
             if ($authorId && (string)$authorId !== (string)$userId) {
                 $pdo->prepare('UPDATE users SET reputation_score = reputation_score + 1 WHERE id = ?')->execute([$authorId]);
-                addNotification($pdo, $authorId, $userId, 'like', 'Някой хареса публикацията ви: ' . $postInfo['title'], $postId);
+                addNotification($pdo, $authorId, $userId, 'like', 'Някой хареса публикацията ви: ' . $postInfo['title'], $targetId);
             }
         }
         send_json(['status' => 'ok']);
@@ -252,10 +263,10 @@ if ($method === 'PUT') {
     }
 
     $isAdmin = (int)($authUser['is_admin'] ?? 0) === 1;
-    if (!$isAdmin && (int)$row['author_id'] !== $authUserId) {
+    if (!empty($row['original_post_id'])) {
         send_problem(403, 'Forbidden', 'You cannot edit this post', null, null, $_SERVER['REQUEST_URI'] ?? null);
     }
-    if (!$isAdmin && !empty($row['original_post_id'])) {
+    if (!$isAdmin && (int)$row['author_id'] !== $authUserId) {
         send_problem(403, 'Forbidden', 'You cannot edit this post', null, null, $_SERVER['REQUEST_URI'] ?? null);
     }
 
@@ -276,20 +287,45 @@ if ($method === 'PUT') {
 
 if ($method === 'DELETE') {
     $id = validate_int_id('id', $_GET['id'] ?? null);
-    $stmtCheck = $pdo->prepare('SELECT author_id FROM posts WHERE id = ?');
+    $stmtCheck = $pdo->prepare('SELECT author_id, original_post_id FROM posts WHERE id = ?');
     $stmtCheck->execute([$id]);
-    $authorId = $stmtCheck->fetchColumn();
-    if (!$authorId) {
+    $row = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
         send_problem(404, 'Not Found', 'Post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
     }
+
+    $authorId = $row['author_id'];
+    $originalPostId = $row['original_post_id'] ?? null;
 
     $isAdmin = (int)($authUser['is_admin'] ?? 0) === 1;
     if (!$isAdmin && (int)$authorId !== $authUserId) {
         send_problem(403, 'Forbidden', 'You cannot delete this post', null, null, $_SERVER['REQUEST_URI'] ?? null);
     }
 
+    if (!empty($originalPostId)) {
+        $pdo->prepare('DELETE FROM posts WHERE id = ?')->execute([$id]);
+        $origAuthorStmt = $pdo->prepare('SELECT author_id FROM posts WHERE id = ?');
+        $origAuthorStmt->execute([(int)$originalPostId]);
+        $origAuthorId = $origAuthorStmt->fetchColumn();
+        if ($origAuthorId) {
+            $pdo->prepare('UPDATE users SET reputation_score = GREATEST(0, reputation_score - 1) WHERE id = ?')->execute([$origAuthorId]);
+        }
+        send_json(['status' => 'deleted']);
+    }
+
+    $findReblogs = $pdo->prepare('SELECT id FROM posts WHERE original_post_id = ?');
+    $findReblogs->execute([$id]);
+    $reblogIds = $findReblogs->fetchAll(PDO::FETCH_COLUMN, 0);
+    $removed = 0;
+    if (!empty($reblogIds)) {
+        $delStmt = $pdo->prepare('DELETE FROM posts WHERE original_post_id = ?');
+        $delStmt->execute([$id]);
+        $removed = count($reblogIds);
+        $pdo->prepare('UPDATE users SET reputation_score = GREATEST(0, reputation_score - ?) WHERE id = ?')->execute([$removed, $authorId]);
+    }
+
     $pdo->prepare('DELETE FROM posts WHERE id = ?')->execute([$id]);
-    send_json(['status' => 'deleted']);
+    send_json(['status' => 'deleted', 'removed_reblogs' => $removed]);
 }
 
 send_problem(405, 'Method Not Allowed', null, null, null, $_SERVER['REQUEST_URI'] ?? null);

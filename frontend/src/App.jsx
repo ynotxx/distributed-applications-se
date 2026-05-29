@@ -3,7 +3,7 @@ import AuthContext, { AuthProvider } from './AuthContext';
 import { LoginRegister } from './components/LoginRegister';
 import './App.css';
 
-const API_BASE = 'http://localhost/uni-api';
+const API_BASE = 'http://localhost/backend';
 const DEFAULT_AVATAR = 'https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y';
 
 const normalizeTimestamp = (ts) => {
@@ -55,8 +55,10 @@ function AppContent() {
   const [profileData, setProfileData] = useState(null);
   const [posts, setPosts] = useState([]);
   const [comments, setComments] = useState({});
+  const [commentsError, setCommentsError] = useState({});
   const [viewedPosts, setViewedPosts] = useState(new Set());
   const [searchTerm, setSearchTerm] = useState('');
+  const [userSearch, setUserSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [sortMode, setSortMode] = useState('newest');
   const [feedMode, setFeedMode] = useState('global');
@@ -66,7 +68,7 @@ function AppContent() {
   const unreadCount = serverNotifications.filter(n => !n.is_read).length;
   const [showActivity, setShowActivity] = useState(false);
   const notificationsPanelRef = useRef(null);
-  const [followState, setFollowState] = useState({ is_following: false });
+  const [followState, setFollowState] = useState({ is_following: false, follow_id: null });
   const [myFollows, setMyFollows] = useState([]);
   const [isBlockedUser, setIsBlockedUser] = useState(false);
   const [followQuery, setFollowQuery] = useState('');
@@ -84,6 +86,7 @@ function AppContent() {
   const [newUsername, setNewUsername] = useState('');
   const [newAvatar, setNewAvatar] = useState('');
   const [showOptions, setShowOptions] = useState(false);
+  const filteredUsers = users.filter(u => u.username.toLowerCase().includes(userSearch.toLowerCase()));
 
   const postsPerPage = 5;
 
@@ -120,7 +123,12 @@ function AppContent() {
   };
 
   const isAdmin = () => currentUser && currentUser.is_admin === 1;
-  const canEdit = (item) => currentUser && (currentUser.id === item.author_id || isAdmin());
+  const canEdit = (item) => {
+    if (!currentUser) return false;
+    const editableAuthorId = item.original_post_id ? (item.original_author_id || item.author_id) : item.author_id;
+    if (String(currentUser.id) === String(editableAuthorId)) return true;
+    return !item.original_post_id && isAdmin();
+  };
   const canDelete = (authorId) => currentUser && (currentUser.id === authorId || isAdmin());
 
   const addActivity = (text) => {
@@ -230,13 +238,16 @@ function AppContent() {
 
   const fetchFollowState = (user) => {
     if (!currentUser || !user || String(currentUser.id) === String(user.id)) {
-      setFollowState({ is_following: false });
+      setFollowState({ is_following: false, follow_id: null });
       return;
     }
     apiFetch(`/follows.php?profile_id=${user.id}`)
       .then(res => res.json())
-      .then(data => setFollowState(data))
-      .catch(() => setFollowState({ is_following: false }));
+      .then(data => setFollowState({
+        is_following: !!data?.is_following,
+        follow_id: data?.follow_id ?? null,
+      }))
+      .catch(() => setFollowState({ is_following: false, follow_id: null }));
   };
 
   const fetchMyFollows = () => {
@@ -254,7 +265,7 @@ function AppContent() {
       .then(data => {
         const rows = Array.isArray(data) ? data : (data && Array.isArray(data.data) ? data.data : []);
         const now = Date.now();
-        const ACTIVE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+        const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
         const mapped = rows.map(f => {
           const otherUsername = f.other_username || (() => {
             const otherId = (String(f.follower_id) === String(currentUser.id)) ? f.following_id : f.follower_id;
@@ -287,16 +298,38 @@ function AppContent() {
 
   const handleToggleFollow = () => {
     if (!currentUser || !profileUser || isMyProfile) return;
-    apiFetch(`/follows.php`, {
-      method: 'POST',
-      body: JSON.stringify({ follower_id: currentUser.id, following_id: profileUser.id })
-    })
-      .then(res => res.json())
-      .then(data => {
-        setFollowState({ is_following: data.following });
+
+    const nextFollowing = !followState.is_following;
+    const nextState = { is_following: nextFollowing, follow_id: nextFollowing ? followState.follow_id : null };
+
+    setFollowState(nextState);
+
+    const request = nextFollowing
+      ? apiFetch(`/follows.php`, {
+          method: 'POST',
+          body: JSON.stringify({ follower_id: currentUser.id, following_id: profileUser.id })
+        })
+      : apiFetch(`/follows.php?id=${followState.follow_id}`, { method: 'DELETE' });
+
+    request
+      .then(async res => {
+        const data = await res.json();
+        if (nextFollowing) {
+          const createdId = data?.id ?? null;
+          setFollowState({ is_following: true, follow_id: createdId });
+          showMsg('Последвахте потребителя.');
+        } else {
+          setFollowState({ is_following: false, follow_id: null });
+          showMsg('Спряхте да следвате потребителя.');
+        }
         fetchUsers();
+        fetchProfileUser(profileSlug);
         fetchNotifications();
-        showMsg(data.following ? 'Последвахте потребителя.' : 'Спряхте да следвате потребителя.');
+      })
+      .catch(() => {
+        setFollowState(prev => ({ ...prev, is_following: !nextFollowing }));
+        fetchFollowState(profileUser);
+        showMsg('Грешка при follow/unfollow.');
       });
   };
 
@@ -405,15 +438,38 @@ function AppContent() {
   };
 
   const fetchComments = (postId) => {
-    apiFetch(`/comments.php?post_id=${postId}&pageSize=50&sortBy=created_at&sortDir=asc`)
+    const numericId = Number(postId);
+    if (!numericId || Number.isNaN(numericId) || numericId <= 0) {
+      console.warn('fetchComments: invalid postId, skipping', postId);
+      return;
+    }
+
+    apiFetch(`/comments.php?post_id=${numericId}&pageSize=50&sortBy=created_at&sortDir=asc`)
       .then(async res => {
         const text = await res.text();
+        if (!res.ok) {
+          console.error('comments.php error', res.status, text);
+          setCommentsError(prev => ({ ...prev, [String(postId)]: `Грешка при зареждане на коментари (${res.status})` }));
+          setComments(prev => ({ ...prev, [String(postId)]: [] }));
+          return null;
+        }
         try { return JSON.parse(text); } 
-        catch (e) { console.error("Грешка в comments.php:", text); return []; }
+        catch (e) { console.error("Грешка в comments.php (invalid JSON):", text); setComments(prev => ({ ...prev, [String(postId)]: [] })); return null; }
       })
       .then(data => {
+        if (!data) return;
         const rows = Array.isArray(data) ? data : (data && Array.isArray(data.data) ? data.data : []);
-        setComments(prev => ({ ...prev, [postId]: rows }));
+        console.debug('Fetched comments for', postId, rows);
+        setComments(prev => ({ ...prev, [String(postId)]: rows }));
+        setCommentsError(prev => {
+          const next = { ...prev };
+          delete next[String(postId)];
+          return next;
+        });
+      }).catch(err => {
+        console.error('Unexpected error fetching comments:', err);
+        setComments(prev => ({ ...prev, [String(postId)]: [] }));
+        setCommentsError(prev => ({ ...prev, [String(postId)]: 'Грешка при свързване' }));
       });
   };
 
@@ -446,6 +502,16 @@ function AppContent() {
   useEffect(() => {
     const applyRoute = () => {
       const hash = window.location.hash.slice(1);
+
+      if (!hash) {
+        window.location.hash = '/posts';
+        setView('posts');
+        setFeedMode('global');
+        setProfileSlug('');
+        setCurrentPage(1);
+        setSearchTerm('');
+        return;
+      }
 
       if (hash.startsWith('/profile/')) {
         setView('profile');
@@ -536,14 +602,16 @@ function AppContent() {
   const handleAddComment = (postId, parentId = null) => {
     const text = parentId ? replyText[parentId] : commentText[postId];
     if (!text) return;
-    apiFetch(`/comments.php`, { method: 'POST', body: JSON.stringify({ post_id: postId, parent_id: parentId, content: text }) })
+    const numericId = Number(postId);
+    if (!numericId || Number.isNaN(numericId) || numericId <= 0) { showMsg('Невалиден идентификатор на публикация'); return; }
+    apiFetch(`/comments.php`, { method: 'POST', body: JSON.stringify({ post_id: numericId, parent_id: parentId, content: text }) })
       .then(() => { 
-        fetchComments(postId);
+        fetchComments(numericId);
         fetchUsers();
         fetchNotifications();
         addActivity(parentId ? 'Отговорихте на коментар' : 'Добавихте коментар');
         if (parentId) { setReplyText(prev => ({ ...prev, [parentId]: '' })); setReplyingTo(null); setCollapsedThreads(prev => ({ ...prev, [parentId]: false })); } 
-        else { setCommentText(prev => ({ ...prev, [postId]: '' })); }
+        else { setCommentText(prev => ({ ...prev, [String(postId)]: '' })); }
       });
   };
 
@@ -711,13 +779,16 @@ function AppContent() {
 
   const renderPost = (p) => {
     const targetId = p.original_post_id || p.id;
-    const displayAvatar = p.author_avatar || DEFAULT_AVATAR;
+    const targetKey = String(targetId);
+    const displayAvatar = p.original_author_avatar || p.author_avatar || DEFAULT_AVATAR;
     const displayUsername = p.original_author_name || p.author_name || 'Неизвестен';
     const originalPostDate = p.original_created_ts || p.created_ts;
     const isReblogged = Number(p.is_reblogged_by_me) > 0;
     const postAuthorObj = users.find(u => u.username === displayUsername);
     const repScore = postAuthorObj ? postAuthorObj.reputation_score : 0;
     const readingTime = Number(p.reading_time_minutes) || 0;
+    const displayTitle = p.original_title || p.title;
+    const displayContent = p.original_content || p.content;
     
     return (
       <div key={p.id} className="card" style={{ border: `1px solid ${colors.border}`, borderRadius: '12px', padding: '15px', marginBottom: '20px', backgroundColor: colors.card, color: colors.text, position: 'relative', boxShadow: isDark ? '0 2px 8px rgba(0,0,0,0.25)' : '0 2px 5px rgba(0,0,0,0.05)' }}>
@@ -738,7 +809,7 @@ function AppContent() {
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '15px' }}>
               <img src={displayAvatar} onClick={() => openProfile({username: displayUsername})} style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '4px', border: `1px solid ${colors.border}`, cursor: 'pointer' }} alt="avatar" />
               <div style={{ flex: 1, overflow: 'hidden' }}>
-                <h2 style={{ margin: '0 0 5px 0' }}>{p.title}</h2>
+                <h2 style={{ margin: '0 0 5px 0' }}>{displayTitle}</h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                   <small style={{ color: colors.link, cursor: 'pointer', fontWeight: 'bold' }} onClick={() => openProfile({username: displayUsername})}>
                     @{displayUsername}
@@ -749,7 +820,7 @@ function AppContent() {
                   {readingTime > 0 && <span style={{ fontSize: '11px', color: colors.muted }}>• {readingTime} мин. четене</span>}
                 </div>
                 
-                <div style={{ marginTop: '15px', fontSize: '16px', lineHeight: '1.5', overflowWrap: 'break-word', color: colors.text }}>{p.content}</div>
+                <div style={{ marginTop: '15px', fontSize: '16px', lineHeight: '1.5', overflowWrap: 'break-word', color: colors.text }}>{displayContent}</div>
               </div>
             </div>
             
@@ -774,11 +845,15 @@ function AppContent() {
         <div className="comments-section" style={{ marginTop: '15px', paddingTop: '15px', borderTop: `1px solid ${colors.subtleBorder}` }}>
           <h4 style={{ margin: '0 0 10px 0', fontSize: '14px', color: colors.muted }}>Коментари</h4>
           <div style={{ marginBottom: '15px' }}>
-            {renderComments(comments[targetId], targetId)}
+            {commentsError[targetKey] ? (
+              <div style={{ color: colors.muted, fontStyle: 'italic' }}>{commentsError[targetKey]}</div>
+            ) : (
+              renderComments(comments[targetKey], targetKey)
+            )}
           </div>
           <div className="comment-input-area" style={{ display: 'flex', gap: '5px' }}>
-            <input placeholder="Напишете нов коментар..." value={commentText[targetId] || ''} onChange={e => setCommentText({ ...commentText, [targetId]: e.target.value })} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddComment(targetId); } }} style={{ flex: 1, padding: '8px', border: `1px solid ${colors.border}` }} />
-            <button onClick={() => handleAddComment(targetId)} className="btn btn-primary" style={{ padding: '4px 15px' }}>OK</button>
+            <input placeholder="Напишете нов коментар..." value={commentText[targetKey] || ''} onChange={e => setCommentText({ ...commentText, [targetKey]: e.target.value })} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddComment(targetKey); } }} style={{ flex: 1, padding: '8px', border: `1px solid ${colors.border}` }} />
+            <button onClick={() => handleAddComment(targetKey)} className="btn btn-primary" style={{ padding: '4px 15px' }}>OK</button>
           </div>
         </div>
       </div>
@@ -893,7 +968,16 @@ function AppContent() {
         </section>
       )}
 
-      {view === 'profile' && profileUser && (
+      {view === 'profile' && profileUser && !!profileUser.blocked_you && (
+        <section>
+          <div className="card" style={{ backgroundColor: colors.softCard, color: colors.text, padding: '20px', border: `1px solid ${colors.border}`, borderRadius: '12px' }}>
+            <h2 style={{ marginTop: 0 }}>Потребителят не съществува.</h2>
+            <p style={{ color: colors.muted }}>Този профил не е наличен.</p>
+          </div>
+        </section>
+      )}
+
+      {view === 'profile' && profileUser && !profileUser.blocked_you && (
         <section>
           <div style={{ background: colors.card, color: colors.text, borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', marginBottom: '20px' }}>
             <div style={{ height: '180px', background: isDark ? 'linear-gradient(135deg, #152235, #26364b)' : 'linear-gradient(135deg, #337ab7, #6fa8dc)' }}></div>
@@ -994,6 +1078,13 @@ function AppContent() {
       {view === 'users' && isAdmin() && (
         <section>
           <h2 style={{ color: colors.text }}>Всички потребители</h2>
+          <input 
+            type="text" 
+            placeholder="Търси потребител..."
+            value={userSearch}
+            onChange={e => setUserSearch(e.target.value)}
+            style={{ width: '100%', marginBottom: '20px', padding: '8px', border: `1px solid ${colors.border}`, backgroundColor: colors.input, color: colors.text }} 
+          />
           <table style={{ width: '100%', marginTop: '20px', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ borderBottom: `2px solid ${colors.border}`, textAlign: 'left' }}>
@@ -1006,7 +1097,7 @@ function AppContent() {
               </tr>
             </thead>
             <tbody>
-              {users.map(u => (
+              {filteredUsers.map(u => (
                 <tr key={u.id} style={{ borderBottom: `1px solid ${colors.subtleBorder}` }}>
                   <td style={{ padding: '8px' }}>{u.id}</td>
                   <td style={{ padding: '8px' }}>{u.username}</td>

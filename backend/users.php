@@ -76,6 +76,10 @@ if ($method === 'GET') {
             send_problem(404, 'Not Found', 'User not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
         }
 
+        $checkBlockedYou = $pdo->prepare('SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ? LIMIT 1');
+        $checkBlockedYou->execute([$user['id'], $authUser['id']]);
+        $user['blocked_you'] = $checkBlockedYou->fetchColumn() ? 1 : 0;
+
         if (isset($user['registered_ts'])) $user['registered_on'] = iso8601_or_null($user['registered_ts']);
         send_json($user);
     }

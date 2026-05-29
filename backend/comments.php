@@ -2,53 +2,75 @@
 
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/notification_helper.php';
 require_once __DIR__ . '/validation.php';
-
-function addNotification($pdo, $userId, $actorId, $type, $message, $postId = null, $commentId = null) {
-    if (!$userId || (string)$userId === (string)$actorId) return;
-    $stmt = $pdo->prepare('INSERT INTO notifications (user_id, actor_id, type, message, post_id, comment_id, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, NOW())');
-    $stmt->execute([$userId, $actorId, $type, $message, $postId, $commentId]);
-}
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $authUser = require_auth($pdo);
 $authUserId = (int)$authUser['id'];
 
 if ($method === 'GET') {
-    $postId = validate_int_id('post_id', $_GET['post_id'] ?? null);
-    $paging = build_paging();
-    $sort = build_sort(['created_at', 'id'], 'created_at', 'asc');
-    $query = "SELECT comments.*, UNIX_TIMESTAMP(comments.created_at) * 1000 as created_ts, users.username, users.avatar, (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = comments.id) as likes_count, (SELECT COUNT(*) FROM comment_likes cl2 WHERE cl2.comment_id = comments.id AND cl2.user_id = ?) as is_liked FROM comments JOIN users ON comments.user_id = users.id WHERE post_id = ? ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
-    $stmt = $pdo->prepare($query);
-    $stmt->execute([$authUserId, $postId]);
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    try {
+        $postIdParam = validate_int_id('post_id', $_GET['post_id'] ?? null);
+        $rootStmt = $pdo->prepare('SELECT COALESCE(original_post_id, id) FROM posts WHERE id = ?');
+        $rootStmt->execute([$postIdParam]);
+        $rootId = $rootStmt->fetchColumn();
+        if (!$rootId) send_problem(404, 'Not Found', 'Post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
+        $postId = (int)$rootId;
+        $paging = build_paging();
+        $sort = build_sort(['created_at', 'id'], 'created_at', 'asc');
+        $query = "SELECT comments.*, UNIX_TIMESTAMP(comments.created_at) * 1000 as created_ts, users.username, users.avatar, (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = comments.id) as likes_count, (SELECT COUNT(*) FROM comment_likes cl2 WHERE cl2.comment_id = comments.id AND cl2.user_id = ?) as is_liked FROM comments JOIN users ON comments.user_id = users.id WHERE (post_id = ? OR post_id IN (SELECT id FROM posts WHERE original_post_id = ?)) ORDER BY {$sort['by']} {$sort['dir']} LIMIT {$paging['limit']} OFFSET {$paging['offset']}";
+        $stmt = $pdo->prepare($query);
+        $stmt->execute([$authUserId, $postId, $postId]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $blockedStmt = $pdo->prepare('SELECT blocked_id FROM blocks WHERE blocker_id = ?');
-    $blockedStmt->execute([$authUserId]);
-    $blockedRows = $blockedStmt->fetchAll(PDO::FETCH_COLUMN, 0);
+        $blockedStmt = $pdo->prepare('SELECT blocked_id FROM blocks WHERE blocker_id = ?');
+        $blockedStmt->execute([$authUserId]);
+        $blockedRows = $blockedStmt->fetchAll(PDO::FETCH_COLUMN, 0);
 
-    $countStmt = $pdo->prepare('SELECT COUNT(*) FROM comments WHERE post_id = ?');
-    $countStmt->execute([$postId]);
-    $total = (int)$countStmt->fetchColumn();
+        $blockedByStmt = $pdo->prepare('SELECT blocker_id FROM blocks WHERE blocked_id = ?');
+        $blockedByStmt->execute([$authUserId]);
+        $blockedByRows = $blockedByStmt->fetchAll(PDO::FETCH_COLUMN, 0);
 
-    foreach ($rows as &$r) {
-        if (isset($r['created_ts'])) $r['created_at'] = iso8601_or_null($r['created_ts']);
-        if (in_array((int)($r['user_id'] ?? 0), $blockedRows, true)) {
-            $r['is_blocked'] = 1;
-            $r['content'] = 'Потребителят @' . ($r['username'] ?? 'потребител') . ' е блокиран';
-        } else {
-            $r['is_blocked'] = 0;
+        $countStmt = $pdo->prepare('SELECT COUNT(*) FROM comments WHERE (post_id = ? OR post_id IN (SELECT id FROM posts WHERE original_post_id = ?))');
+        $countStmt->execute([$postId, $postId]);
+        $total = (int)$countStmt->fetchColumn();
+
+        $filtered = [];
+        foreach ($rows as $r) {
+            if (isset($r['created_ts'])) $r['created_at'] = iso8601_or_null($r['created_ts']);
+            $userId = (int)($r['user_id'] ?? 0);
+            if (in_array($userId, $blockedByRows, true)) {
+                continue;
+            }
+            if (in_array($userId, $blockedRows, true)) {
+                $r['is_blocked'] = 1;
+                $r['content'] = 'Потребителят @' . ($r['username'] ?? 'потребител') . ' е блокиран';
+            } else {
+                $r['is_blocked'] = 0;
+            }
+            $filtered[] = $r;
         }
-    }
 
-    send_list_json($rows, ['page' => $paging['page'], 'pageSize' => $paging['pageSize'], 'total' => $total]);
+        $hiddenCount = count($rows) - count($filtered);
+        $total = max(0, $total - $hiddenCount);
+
+        send_list_json($filtered, ['page' => $paging['page'], 'pageSize' => $paging['pageSize'], 'total' => $total]);
+    } catch (PDOException $e) {
+        send_problem(500, 'Database Error', $e->getMessage(), null, null, $_SERVER['REQUEST_URI'] ?? null);
+    }
 }
 
 if ($method === 'POST') {
     $d = read_json_body();
     $parentId = isset($d['parent_id']) && is_numeric($d['parent_id']) ? (int)$d['parent_id'] : null;
     $content = trim((string)($d['content'] ?? ''));
-    $postId = validate_int_id('post_id', $d['post_id'] ?? null);
+    $rawPostId = validate_int_id('post_id', $d['post_id'] ?? null);
+    $rootStmt = $pdo->prepare('SELECT COALESCE(original_post_id, id) FROM posts WHERE id = ?');
+    $rootStmt->execute([$rawPostId]);
+    $rootId = $rootStmt->fetchColumn();
+    if (!$rootId) send_problem(404, 'Not Found', 'Post not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
+    $postId = (int)$rootId;
 
     if ($content === '') {
         send_problem(400, 'Validation Error', 'Invalid comment', null, ['content' => 'required'], $_SERVER['REQUEST_URI'] ?? null);
@@ -125,24 +147,60 @@ if ($method === 'PUT') {
 
 if ($method === 'DELETE') {
     $id = validate_int_id('id', $_GET['id'] ?? null);
-    $oldStmt = $pdo->prepare('SELECT user_id, is_approved FROM comments WHERE id = ?');
-    $oldStmt->execute([$id]);
-    $old = $oldStmt->fetch(PDO::FETCH_ASSOC);
-    if (!$old) {
+    $treeStmt = $pdo->prepare(<<<'SQL'
+        WITH RECURSIVE comment_tree AS (
+            SELECT id, user_id, is_approved
+            FROM comments
+            WHERE id = ?
+            UNION ALL
+            SELECT c.id, c.user_id, c.is_approved
+            FROM comments c
+            INNER JOIN comment_tree ct ON c.parent_id = ct.id
+        )
+        SELECT id, user_id, is_approved FROM comment_tree
+    SQL
+    );
+    $treeStmt->execute([$id]);
+    $commentsToRemove = $treeStmt->fetchAll(PDO::FETCH_ASSOC);
+    if (!$commentsToRemove) {
         send_problem(404, 'Not Found', 'Comment not found', null, null, $_SERVER['REQUEST_URI'] ?? null);
     }
 
     $isAdmin = (int)($authUser['is_admin'] ?? 0) === 1;
-    if (!$isAdmin && (int)$old['user_id'] !== $authUserId) {
+    if (!$isAdmin && (int)$commentsToRemove[0]['user_id'] !== $authUserId) {
         send_problem(403, 'Forbidden', 'You cannot delete this comment', null, null, $_SERVER['REQUEST_URI'] ?? null);
     }
 
-    $pdo->prepare('DELETE FROM comments WHERE id = ?')->execute([$id]);
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare('DELETE FROM comments WHERE id = ?')->execute([$id]);
 
-    if ((int)$old['is_approved'] === 1) {
-        $pdo->prepare('UPDATE users SET reputation_score = reputation_score - 1 WHERE id = ?')->execute([$old['user_id']]);
-    } else {
-        $pdo->prepare('UPDATE users SET reputation_score = reputation_score + 3 WHERE id = ?')->execute([$old['user_id']]);
+        $reputationByUser = [];
+        foreach ($commentsToRemove as $commentRow) {
+            $commentUserId = (int)($commentRow['user_id'] ?? 0);
+            if ($commentUserId <= 0) {
+                continue;
+            }
+
+            if (!isset($reputationByUser[$commentUserId])) {
+                $reputationByUser[$commentUserId] = 0;
+            }
+
+            $reputationByUser[$commentUserId] += ((int)($commentRow['is_approved'] ?? 1) === 1) ? -1 : 3;
+        }
+
+        foreach ($reputationByUser as $userId => $delta) {
+            if ($delta !== 0) {
+                $pdo->prepare('UPDATE users SET reputation_score = reputation_score + ? WHERE id = ?')->execute([$delta, $userId]);
+            }
+        }
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
     }
 
     send_json(['status' => 'deleted']);

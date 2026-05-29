@@ -69,12 +69,21 @@ if ($method === 'POST') {
         $stmt->execute([$authorId, $authUserId, 'like', 'Някой хареса публикацията ви: ' . ($rootPost['target_title'] ?? ''), $targetId]);
     }
 
-    $likeId = $pdo->lastInsertId();
-    $likeStmt = $pdo->prepare('SELECT id, post_id, user_id, created_at, reaction_type, weight, source FROM post_likes WHERE id = ?');
-    $likeStmt->execute([$likeId]);
+    $likeStmt = $pdo->prepare('SELECT id, post_id, user_id, created_at, reaction_type, weight, source FROM post_likes WHERE post_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1');
+    $likeStmt->execute([$targetId, $authUserId]);
     $like = $likeStmt->fetch(PDO::FETCH_ASSOC);
     if ($like) {
         $like['created_at'] = iso8601_or_null($like['created_at']);
+    } else {
+        $like = [
+            'id' => $pdo->lastInsertId(),
+            'post_id' => $targetId,
+            'user_id' => $authUserId,
+            'created_at' => gmdate(DATE_ATOM),
+            'reaction_type' => 'like',
+            'weight' => 1,
+            'source' => 'web',
+        ];
     }
     send_json($like, 201);
 }

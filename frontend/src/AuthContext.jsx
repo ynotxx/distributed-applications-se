@@ -2,7 +2,7 @@ import { createContext, useState, useCallback, useEffect } from 'react';
 
 const AuthContext = createContext(null);
 
-const API_BASE = 'http://localhost/uni-api';
+const API_BASE = 'http://localhost/backend';
 
 export function AuthProvider({ children }) {
   const [authToken, setAuthToken] = useState(null);

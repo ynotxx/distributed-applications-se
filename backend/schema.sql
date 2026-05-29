@@ -1,5 +1,5 @@
-CREATE DATABASE IF NOT EXISTS `uni-blog` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE `uni-blog`;
+CREATE DATABASE IF NOT EXISTS `backend` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE `backend`;
 
 SET sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION';
 SET FOREIGN_KEY_CHECKS = 0;
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS comments (
     KEY ix_comments_parent (parent_id),
     CONSTRAINT fk_comments_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
     CONSTRAINT fk_comments_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    CONSTRAINT fk_comments_parent FOREIGN KEY (parent_id) REFERENCES comments(id) ON DELETE SET NULL
+    CONSTRAINT fk_comments_parent FOREIGN KEY (parent_id) REFERENCES comments(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS follows (
@@ -115,6 +115,21 @@ CREATE TABLE IF NOT EXISTS post_likes (
     KEY ix_post_likes_user (user_id),
     CONSTRAINT fk_post_likes_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
     CONSTRAINT fk_post_likes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS comment_likes (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    comment_id INT UNSIGNED NOT NULL,
+    user_id INT UNSIGNED NOT NULL,
+    created_at DATETIME NOT NULL,
+    reaction_type VARCHAR(20) NOT NULL DEFAULT 'like',
+    weight SMALLINT NOT NULL DEFAULT 1,
+    source VARCHAR(30) NOT NULL DEFAULT 'web',
+    PRIMARY KEY (id),
+    UNIQUE KEY ux_comment_likes (comment_id, user_id),
+    KEY ix_comment_likes_user (user_id),
+    CONSTRAINT fk_comment_likes_comment FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    CONSTRAINT fk_comment_likes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS blocks (

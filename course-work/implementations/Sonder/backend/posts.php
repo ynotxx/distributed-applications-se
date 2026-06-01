@@ -15,7 +15,7 @@ if ($method === 'GET') {
 
     $feed = str_param($_GET['feed'] ?? null, 'global');
     $q = str_param($_GET['q'] ?? null, '');
-    $authorId = $_GET['author_id'] ?? null;
+    $authorId = $_GET['author_id'] ?? $_GET['profile_id'] ?? null;
     $authorIdVal = (is_numeric($authorId) && (int)$authorId > 0) ? (int)$authorId : null;
 
     $where = [];
